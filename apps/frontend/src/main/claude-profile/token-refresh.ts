@@ -496,7 +496,8 @@ export async function reactiveTokenRefresh(
     return {
       token: null,
       wasRefreshed: false,
-      error: `Reactive refresh failed: ${refreshResult.error}`
+      error: `Reactive refresh failed: ${refreshResult.error}`,
+      errorCode: refreshResult.errorCode
     };
   }
 
