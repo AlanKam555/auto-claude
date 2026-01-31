@@ -954,7 +954,10 @@ export function Worktrees({ projectId }: WorktreesProps) {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isDeletingTerminal}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleDeleteTerminalWorktree}
+              onClick={(e) => {
+                e.preventDefault();
+                handleDeleteTerminalWorktree();
+              }}
               disabled={isDeletingTerminal}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
