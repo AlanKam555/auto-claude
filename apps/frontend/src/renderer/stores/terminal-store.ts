@@ -131,6 +131,7 @@ interface TerminalState {
   clearAllTerminals: () => void;
   setHasRestoredSessions: (value: boolean) => void;
   reorderTerminals: (activeId: string, overId: string) => void;
+  resumeAllPendingClaude: () => Promise<void>;
 
   // Selectors
   getTerminal: (id: string) => Terminal | undefined;
@@ -430,6 +431,42 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         terminals: terminalsWithOrder,
       };
     });
+  },
+
+  resumeAllPendingClaude: async () => {
+    const state = get();
+
+    // Filter terminals with pending Claude resume
+    const pendingTerminals = state.terminals.filter(t => t.pendingClaudeResume === true);
+
+    if (pendingTerminals.length === 0) {
+      debugLog('[TerminalStore] No terminals with pending Claude resume');
+      return;
+    }
+
+    debugLog(`[TerminalStore] Resuming ${pendingTerminals.length} pending Claude sessions with 500ms stagger`);
+
+    // Iterate through terminals with staggered delays
+    for (const terminal of pendingTerminals) {
+      try {
+        debugLog(`[TerminalStore] Activating deferred Claude resume for terminal: ${terminal.id}`);
+        await window.electronAPI.activateDeferredClaudeResume(terminal.id);
+
+        // Clear the pending flag
+        get().setPendingClaudeResume(terminal.id, false);
+
+        // Wait 500ms before processing next terminal (staggered delay)
+        if (pendingTerminals.indexOf(terminal) < pendingTerminals.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      } catch (error) {
+        debugError(`[TerminalStore] Error resuming Claude for terminal ${terminal.id}:`, error);
+        // Clear the flag even on error to prevent retry loops
+        get().setPendingClaudeResume(terminal.id, false);
+      }
+    }
+
+    debugLog('[TerminalStore] Completed resuming all pending Claude sessions');
   },
 
   getTerminal: (id: string) => {
