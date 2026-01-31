@@ -76,6 +76,44 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# FILE VALIDATION UTILITIES
+# =============================================================================
+
+
+def validate_subtask_files(subtask: dict, project_dir: Path) -> dict:
+    """
+    Validate all files_to_modify exist before subtask execution.
+
+    Args:
+        subtask: Subtask dictionary containing files_to_modify array
+        project_dir: Root directory of the project
+
+    Returns:
+        dict with:
+        - success (bool): True if all files exist
+        - error (str): Error message if validation fails
+        - missing_files (list): List of missing file paths
+        - suggestion (str): Actionable suggestion for resolution
+    """
+    missing_files = []
+
+    for file_path in subtask.get("files_to_modify", []):
+        full_path = Path(project_dir) / file_path
+        if not full_path.exists():
+            missing_files.append(file_path)
+
+    if missing_files:
+        return {
+            "success": False,
+            "error": f"Planned files do not exist: {', '.join(missing_files)}",
+            "missing_files": missing_files,
+            "suggestion": "Update implementation plan with correct filenames or create missing files",
+        }
+
+    return {"success": True, "missing_files": []}
+
+
 async def run_autonomous_agent(
     project_dir: Path,
     spec_dir: Path,
