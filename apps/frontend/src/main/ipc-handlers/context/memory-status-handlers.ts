@@ -35,7 +35,11 @@ export function loadGraphitiStateFromSpecs(
   const specDirs = readdirSync(specsDir)
     .filter((f: string) => {
       const specPath = path.join(specsDir, f);
-      return statSync(specPath).isDirectory();
+      try {
+        return statSync(specPath).isDirectory();
+      } catch {
+        return false;
+      }
     })
     .sort()
     .reverse();
