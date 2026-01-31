@@ -196,7 +196,9 @@ ${taskSummaries}
 
 ${request.customInstructions ? `Note: ${request.customInstructions}` : ''}
 
-CRITICAL: Output ONLY the raw changelog content. Do NOT include ANY introductory text, analysis, or explanation. Start directly with the changelog heading (## or #). No "Here's the changelog" or similar phrases.`;
+CRITICAL: Output ONLY the raw changelog content. Do NOT include ANY introductory text, analysis, or explanation. Start directly with the changelog heading (## or #). No "Here's the changelog" or similar phrases.
+
+DO NOT ask questions or request clarifications. Work with the information provided and make reasonable assumptions if needed. Generate the changelog immediately based on the completed tasks listed above.`;
 }
 
 /**
