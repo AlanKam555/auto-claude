@@ -133,6 +133,19 @@ export class AgentManager extends EventEmitter {
       return;
     }
 
+    // Reset stuck subtasks if restarting an existing spec creation task
+    if (specDir) {
+      const planPath = path.join(specDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
+      console.log('[AgentManager] Resetting stuck subtasks before spec creation restart:', planPath);
+      resetStuckSubtasks(planPath).then(({ success, resetCount }) => {
+        if (success && resetCount > 0) {
+          console.log(`[AgentManager] Successfully reset ${resetCount} stuck subtask(s) before spec creation`);
+        }
+      }).catch(err => {
+        console.warn('[AgentManager] Failed to reset stuck subtasks before spec creation:', err);
+      });
+    }
+
     // Get combined environment variables
     const combinedEnv = this.processManager.getCombinedEnv(projectPath);
 
