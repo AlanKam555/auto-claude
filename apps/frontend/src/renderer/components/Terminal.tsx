@@ -349,7 +349,15 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
   // This ensures Claude sessions are only resumed when the user actually views the terminal,
   // preventing all terminals from resuming simultaneously on app startup (which can crash the app)
   useEffect(() => {
+    console.log('[Terminal Debug] Resume effect triggered:', {
+      terminalId: id,
+      isActive,
+      pendingClaudeResume: terminal?.pendingClaudeResume,
+      timestamp: new Date().toISOString(),
+    });
+
     if (isActive && terminal?.pendingClaudeResume) {
+      console.log('[Terminal Debug] Calling activateDeferredClaudeResume for terminal:', id);
       // Clear the pending flag and trigger the actual resume
       useTerminalStore.getState().setPendingClaudeResume(id, false);
       window.electronAPI.activateDeferredClaudeResume(id);
