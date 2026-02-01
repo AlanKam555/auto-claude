@@ -1069,10 +1069,18 @@ class PRLogCollector {
   private currentPhase: PRLogPhase = "context";
   private entryCount: number = 0;
   private saveInterval: number = 3; // Save every N entries for real-time streaming
+  private mainWindow: BrowserWindow | null;
 
-  constructor(project: Project, prNumber: number, repo: string, isFollowup: boolean) {
+  constructor(
+    project: Project,
+    prNumber: number,
+    repo: string,
+    isFollowup: boolean,
+    mainWindow?: BrowserWindow
+  ) {
     this.project = project;
     this.logs = createEmptyPRLogs(prNumber, repo, isFollowup);
+    this.mainWindow = mainWindow || null;
 
     // Debug: Log collector creation
     const logPath = getPRLogsPath(project, prNumber);
@@ -1080,7 +1088,8 @@ class PRLogCollector {
       prNumber,
       repo,
       isFollowup,
-      logPath
+      logPath,
+      hasMainWindow: !!this.mainWindow
     });
 
     // Save initial empty logs so frontend sees the structure immediately
@@ -1160,6 +1169,21 @@ class PRLogCollector {
       }))
     });
     savePRLogs(this.project, this.logs);
+
+    // Emit IPC event to notify renderer of log update
+    // This enables push-based updates instead of relying solely on polling
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send(IPC_CHANNELS.GITHUB_PR_LOGS_UPDATED, {
+        projectId: this.project.id,
+        prNumber: this.logs.pr_number,
+        phaseStatus: {
+          context: this.logs.phases.context.status,
+          analysis: this.logs.phases.analysis.status,
+          synthesis: this.logs.phases.synthesis.status
+        },
+        entryCount: this.entryCount
+      });
+    }
   }
 
   finalize(success: boolean): void {
@@ -1295,7 +1319,7 @@ async function runPRReview(
   // Create log collector for this review
   const config = getGitHubConfig(project);
   const repo = config?.repo || project.name || "unknown";
-  const logCollector = new PRLogCollector(project, prNumber, repo, false);
+  const logCollector = new PRLogCollector(project, prNumber, repo, false, mainWindow);
 
   // Build environment with project settings
   const subprocessEnv = await getRunnerEnv(getClaudeMdEnv(project));
@@ -2679,7 +2703,7 @@ export function registerPRHandlers(getMainWindow: () => BrowserWindow | null): v
 
           // Create log collector for this follow-up review (config already declared above)
           const repo = config?.repo || project.name || "unknown";
-          const logCollector = new PRLogCollector(project, prNumber, repo, true);
+          const logCollector = new PRLogCollector(project, prNumber, repo, true, mainWindow);
 
           // Build environment with project settings
           const followupEnv = await getRunnerEnv(getClaudeMdEnv(project));
