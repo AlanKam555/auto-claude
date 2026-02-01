@@ -21,6 +21,7 @@ import type {
   GitBranchInfo,
   GitTagInfo
 } from '../../shared/types';
+import { isCompletedTask } from '../../shared/utils/task-status';
 import { ChangelogGenerator } from './generator';
 import { VersionSuggester } from './version-suggester';
 import { parseExistingChangelog } from './parser';
@@ -264,7 +265,7 @@ export class ChangelogService extends EventEmitter {
     const specsDir = path.join(projectPath, specsBaseDir || AUTO_BUILD_PATHS.SPECS_DIR);
 
     return tasks
-      .filter(task => task.status === 'done' && !task.metadata?.archivedAt)
+      .filter(task => isCompletedTask(task.status) && !task.metadata?.archivedAt)
       .map(task => {
         const specDir = path.join(specsDir, task.specId);
         const hasSpecs = existsSync(specDir) && existsSync(path.join(specDir, AUTO_BUILD_PATHS.SPEC_FILE));
