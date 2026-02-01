@@ -365,14 +365,17 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
 
     // Check if both conditions are met for auto-resume
     if (isActive && terminal?.pendingClaudeResume) {
-      // Mark that we've attempted resume to prevent duplicates
-      hasAttemptedAutoResumeRef.current = true;
-
       // Defer the resume slightly to ensure all React state updates have propagated
       // This fixes the race condition where isActive and pendingClaudeResume might update
       // at different times during the restoration flow
       const timer = setTimeout(() => {
         if (!isMountedRef.current) return;
+
+        // Mark that we've attempted resume INSIDE the callback to prevent duplicates
+        // This ensures we only mark as attempted if the timeout actually fires
+        // (prevents race condition where effect re-runs before timeout executes)
+        if (hasAttemptedAutoResumeRef.current) return;
+        hasAttemptedAutoResumeRef.current = true;
 
         // Double-check conditions before resuming (state might have changed)
         const currentTerminal = useTerminalStore.getState().terminals.find((t) => t.id === id);
