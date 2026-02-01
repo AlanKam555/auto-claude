@@ -57,6 +57,9 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
   // Track last sent PTY dimensions to prevent redundant resize calls
   // This ensures terminal.resize() stays in sync with PTY dimensions
   const lastPtyDimensionsRef = useRef<{ cols: number; rows: number } | null>(null);
+  // Track if auto-resume has been attempted to prevent duplicate resume calls
+  // This fixes the race condition where isActive and pendingClaudeResume update timing can miss the effect trigger
+  const hasAttemptedAutoResumeRef = useRef(false);
 
   // Worktree dialog state
   const [showWorktreeDialog, setShowWorktreeDialog] = useState(false);
@@ -349,18 +352,38 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
   // This ensures Claude sessions are only resumed when the user actually views the terminal,
   // preventing all terminals from resuming simultaneously on app startup (which can crash the app)
   useEffect(() => {
-    console.log('[Terminal Debug] Resume effect triggered:', {
-      terminalId: id,
-      isActive,
-      pendingClaudeResume: terminal?.pendingClaudeResume,
-      timestamp: new Date().toISOString(),
-    });
+    // Reset resume attempt tracking when terminal is no longer pending
+    if (!terminal?.pendingClaudeResume) {
+      hasAttemptedAutoResumeRef.current = false;
+      return;
+    }
 
+    // Only attempt auto-resume once, even if the effect runs multiple times
+    if (hasAttemptedAutoResumeRef.current) {
+      return;
+    }
+
+    // Check if both conditions are met for auto-resume
     if (isActive && terminal?.pendingClaudeResume) {
-      console.log('[Terminal Debug] Calling activateDeferredClaudeResume for terminal:', id);
-      // Clear the pending flag and trigger the actual resume
-      useTerminalStore.getState().setPendingClaudeResume(id, false);
-      window.electronAPI.activateDeferredClaudeResume(id);
+      // Mark that we've attempted resume to prevent duplicates
+      hasAttemptedAutoResumeRef.current = true;
+
+      // Defer the resume slightly to ensure all React state updates have propagated
+      // This fixes the race condition where isActive and pendingClaudeResume might update
+      // at different times during the restoration flow
+      const timer = setTimeout(() => {
+        if (!isMountedRef.current) return;
+
+        // Double-check conditions before resuming (state might have changed)
+        const currentTerminal = useTerminalStore.getState().terminals.find((t) => t.id === id);
+        if (currentTerminal?.pendingClaudeResume) {
+          // Clear the pending flag and trigger the actual resume
+          useTerminalStore.getState().setPendingClaudeResume(id, false);
+          window.electronAPI.activateDeferredClaudeResume(id);
+        }
+      }, 100); // Small delay to let React finish batched updates
+
+      return () => clearTimeout(timer);
     }
   }, [isActive, id, terminal?.pendingClaudeResume]);
 
