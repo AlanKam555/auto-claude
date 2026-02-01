@@ -26,8 +26,9 @@ export const changelogMock = {
     data: []
   }),
 
-  generateChangelog: () => {
+  generateChangelog: async () => {
     console.warn('[Browser Mock] generateChangelog called');
+    return { success: true };
   },
 
   saveChangelog: async () => ({
