@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeSDKClient
+from core.file_utils import write_json_atomic
 from debug import debug, debug_detailed, debug_error, debug_section, debug_success
 from insight_extractor import extract_session_insights
 from linear_updater import (
@@ -79,6 +80,7 @@ async def post_session_processing(
     linear_enabled: bool = False,
     status_manager: StatusManager | None = None,
     source_spec_dir: Path | None = None,
+    error_info: dict | None = None,
 ) -> bool:
     """
     Process session results and update memory automatically.
@@ -96,6 +98,7 @@ async def post_session_processing(
         linear_enabled: Whether Linear integration is enabled
         status_manager: Optional status manager for ccstatusline
         source_spec_dir: Original spec directory (for syncing back from worktree)
+        error_info: Error information from run_agent_session (for rate limit detection)
 
     Returns:
         True if subtask was completed successfully
@@ -226,6 +229,57 @@ async def post_session_processing(
             approach="Session ended with subtask in_progress",
             error="Subtask not marked as completed",
         )
+
+        # Check if this was a rate limit error - if so, reset subtask to pending for retry
+        is_rate_limit_error = (
+            error_info
+            and error_info.get("type") == "tool_concurrency"
+        )
+
+        if is_rate_limit_error:
+            print_status(
+                f"Rate limit detected - resetting subtask {subtask_id} to pending for retry",
+                "info",
+            )
+
+            # Load implementation plan
+            plan = load_implementation_plan(spec_dir)
+            if plan:
+                # Find and reset the subtask
+                subtask_found = False
+                for phase in plan.get("phases", []):
+                    for subtask in phase.get("subtasks", []):
+                        if subtask.get("id") == subtask_id:
+                            # Reset subtask to pending state
+                            subtask["status"] = "pending"
+                            subtask["started_at"] = None
+                            subtask["completed_at"] = None
+                            subtask_found = True
+                            break
+                    if subtask_found:
+                        break
+
+                if subtask_found:
+                    # Save plan atomically to prevent corruption
+                    try:
+                        plan_path = spec_dir / "implementation_plan.json"
+                        write_json_atomic(plan_path, plan, indent=2)
+                        print_status(
+                            f"Subtask {subtask_id} reset to pending status", "success"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to save implementation plan after reset: {e}")
+                        print_status(
+                            "Failed to save plan after reset", "error"
+                        )
+                else:
+                    print_status(
+                        f"Warning: Could not find subtask {subtask_id} in plan", "warning"
+                    )
+            else:
+                print_status(
+                    "Warning: Could not load implementation plan for reset", "warning"
+                )
 
         # Still record commit if one was made (partial progress)
         if commit_after and commit_after != commit_before:
