@@ -1073,6 +1073,16 @@ class PRLogCollector {
   constructor(project: Project, prNumber: number, repo: string, isFollowup: boolean) {
     this.project = project;
     this.logs = createEmptyPRLogs(prNumber, repo, isFollowup);
+
+    // Debug: Log collector creation
+    const logPath = getPRLogsPath(project, prNumber);
+    debugLog("PRLogCollector created", {
+      prNumber,
+      repo,
+      isFollowup,
+      logPath
+    });
+
     // Save initial empty logs so frontend sees the structure immediately
     this.save();
   }
@@ -1082,6 +1092,16 @@ class PRLogCollector {
     if (!parsed) return;
 
     const phase = getPhaseFromSource(parsed.source);
+
+    // Debug: Log line processing
+    debugLog("PRLogCollector.processLine()", {
+      prNumber: this.logs.pr_number,
+      phase,
+      currentPhase: this.currentPhase,
+      source: parsed.source,
+      isError: parsed.isError,
+      entryCount: this.entryCount
+    });
 
     // Track phase transitions - mark previous phases as complete (only if they were active)
     if (phase !== this.currentPhase) {
@@ -1128,6 +1148,17 @@ class PRLogCollector {
   }
 
   save(): void {
+    const logPath = getPRLogsPath(this.project, this.logs.pr_number);
+    debugLog("PRLogCollector.save()", {
+      prNumber: this.logs.pr_number,
+      logPath,
+      entryCount: this.entryCount,
+      phases: Object.entries(this.logs.phases).map(([name, phase]) => ({
+        name,
+        status: phase.status,
+        entryCount: phase.entries.length
+      }))
+    });
     savePRLogs(this.project, this.logs);
   }
 
