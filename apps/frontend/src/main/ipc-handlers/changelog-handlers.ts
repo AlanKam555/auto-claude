@@ -109,25 +109,31 @@ export function registerChangelogHandlers(
         return { success: false, error: 'Project not found' };
       }
 
-      try {
-        // Load specs for selected tasks (only in tasks mode)
-        let specs: TaskSpecContent[] = [];
-        if (request.sourceMode === 'tasks' && request.taskIds && request.taskIds.length > 0) {
-          const tasks = projectStore.getTasks(request.projectId);
-          const specsBaseDir = getSpecsDir(project.autoBuildPath);
-          specs = await changelogService.loadTaskSpecs(project.path, request.taskIds, tasks, specsBaseDir);
+      // Return immediately to allow renderer to register event listeners
+      // Start the actual generation asynchronously
+      setImmediate(async () => {
+        try {
+          // Load specs for selected tasks (only in tasks mode)
+          let specs: TaskSpecContent[] = [];
+          if (request.sourceMode === 'tasks' && request.taskIds && request.taskIds.length > 0) {
+            const tasks = projectStore.getTasks(request.projectId);
+            const specsBaseDir = getSpecsDir(project.autoBuildPath);
+            specs = await changelogService.loadTaskSpecs(project.path, request.taskIds, tasks, specsBaseDir);
+          }
+
+          // Start generation (progress/completion/errors will be sent via event handlers)
+          changelogService.generateChangelog(request.projectId, project.path, request, specs);
+        } catch (error) {
+          // Send error via event instead of return value since we already returned
+          const mainWindow = getMainWindow();
+          if (mainWindow) {
+            const errorMessage = error instanceof Error ? error.message : 'Failed to start changelog generation';
+            mainWindow.webContents.send(IPC_CHANNELS.CHANGELOG_GENERATION_ERROR, request.projectId, errorMessage);
+          }
         }
+      });
 
-        // Start generation (progress/completion/errors will be sent via event handlers)
-        changelogService.generateChangelog(request.projectId, project.path, request, specs);
-
-        return { success: true };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to start changelog generation'
-        };
-      }
+      return { success: true };
     }
   );
 
