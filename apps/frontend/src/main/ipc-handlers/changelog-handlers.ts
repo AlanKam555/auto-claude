@@ -21,43 +21,79 @@ import type {
 import { projectStore } from '../project-store';
 import { changelogService } from '../changelog-service';
 
+// Store cleanup function to remove listeners on subsequent calls
+let cleanupListeners: (() => void) | null = null;
+
 /**
  * Register all changelog-related IPC handlers
  */
 export function registerChangelogHandlers(
   getMainWindow: () => BrowserWindow | null
 ): void {
+  // Remove previous listeners if they exist
+  if (cleanupListeners) {
+    cleanupListeners();
+  }
+
   // ============================================
   // Changelog Event Handlers
   // ============================================
 
-  changelogService.on('generation-progress', (projectId: string, progress: import('../../shared/types').ChangelogGenerationProgress) => {
+  const progressHandler = (projectId: string, progress: import('../../shared/types').ChangelogGenerationProgress) => {
     const mainWindow = getMainWindow();
     if (mainWindow) {
       mainWindow.webContents.send(IPC_CHANNELS.CHANGELOG_GENERATION_PROGRESS, projectId, progress);
     }
-  });
+  };
 
-  changelogService.on('generation-complete', (projectId: string, result: import('../../shared/types').ChangelogGenerationResult) => {
+  const completeHandler = (projectId: string, result: import('../../shared/types').ChangelogGenerationResult) => {
     const mainWindow = getMainWindow();
     if (mainWindow) {
       mainWindow.webContents.send(IPC_CHANNELS.CHANGELOG_GENERATION_COMPLETE, projectId, result);
     }
-  });
+  };
 
-  changelogService.on('generation-error', (projectId: string, error: string) => {
+  const errorHandler = (projectId: string, error: string) => {
     const mainWindow = getMainWindow();
     if (mainWindow) {
       mainWindow.webContents.send(IPC_CHANNELS.CHANGELOG_GENERATION_ERROR, projectId, error);
     }
-  });
+  };
 
-  changelogService.on('rate-limit', (projectId: string, rateLimitInfo: import('../../shared/types').SDKRateLimitInfo) => {
+  const rateLimitHandler = (projectId: string, rateLimitInfo: import('../../shared/types').SDKRateLimitInfo) => {
     const mainWindow = getMainWindow();
     if (mainWindow) {
       mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_SDK_RATE_LIMIT, rateLimitInfo);
     }
-  });
+  };
+
+  // Register event listeners
+  changelogService.on('generation-progress', progressHandler);
+  changelogService.on('generation-complete', completeHandler);
+  changelogService.on('generation-error', errorHandler);
+  changelogService.on('rate-limit', rateLimitHandler);
+
+  // Store cleanup function to remove all listeners
+  cleanupListeners = () => {
+    changelogService.off('generation-progress', progressHandler);
+    changelogService.off('generation-complete', completeHandler);
+    changelogService.off('generation-error', errorHandler);
+    changelogService.off('rate-limit', rateLimitHandler);
+
+    // Also remove IPC handlers
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_GET_DONE_TASKS);
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_LOAD_TASK_SPECS);
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_GENERATE);
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_SAVE);
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_READ_EXISTING);
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_SUGGEST_VERSION);
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_SUGGEST_VERSION_FROM_COMMITS);
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_GET_BRANCHES);
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_GET_TAGS);
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_GET_COMMITS_PREVIEW);
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_SAVE_IMAGE);
+    ipcMain.removeHandler(IPC_CHANNELS.CHANGELOG_READ_LOCAL_IMAGE);
+  };
 
   // ============================================
   // Changelog Operations
