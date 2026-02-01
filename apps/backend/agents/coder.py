@@ -429,6 +429,41 @@ async def run_autonomous_agent(
                     print("No pending subtasks found - build may be complete!")
                     break
 
+            # Validate that all files_to_modify exist before attempting execution
+            # This prevents infinite retry loops when implementation plan references non-existent files
+            validation_result = validate_subtask_files(next_subtask, project_dir)
+            if not validation_result["success"]:
+                # File validation failed - record error and skip session
+                error_msg = validation_result["error"]
+                suggestion = validation_result.get("suggestion", "")
+
+                print()
+                print_status(f"File validation failed: {error_msg}", "error")
+                if suggestion:
+                    print(muted(f"Suggestion: {suggestion}"))
+                print()
+
+                # Record the validation failure in recovery manager
+                recovery_manager.record_attempt(
+                    subtask_id=subtask_id,
+                    session_num=iteration,
+                    status="failed",
+                    error=error_msg,
+                )
+
+                # Log the validation failure
+                if task_logger:
+                    task_logger.log_error(
+                        f"File validation failed: {error_msg}", LogPhase.CODING
+                    )
+
+                # Update status
+                status_manager.update(state=BuildState.ERROR)
+
+                # Small delay before retry
+                await asyncio.sleep(AUTO_CONTINUE_DELAY_SECONDS)
+                continue  # Skip to next iteration
+
             # Get attempt count for recovery context
             attempt_count = recovery_manager.get_attempt_count(subtask_id)
             recovery_hints = (
