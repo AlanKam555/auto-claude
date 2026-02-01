@@ -162,9 +162,13 @@ export function formatTimeRemaining(ms: number | null): string {
  * The new tokens must be stored immediately.
  *
  * @param refreshToken - The refresh token to use
+ * @param configDir - Optional config directory for the profile (used to clear cache on error)
  * @returns Result containing new tokens or error information
  */
-export async function refreshOAuthToken(refreshToken: string): Promise<TokenRefreshResult> {
+export async function refreshOAuthToken(
+  refreshToken: string,
+  configDir?: string
+): Promise<TokenRefreshResult> {
   const isDebug = process.env.DEBUG === 'true';
 
   if (isDebug) {
@@ -228,6 +232,11 @@ export async function refreshOAuthToken(refreshToken: string): Promise<TokenRefr
             errorCode,
             errorDescription
           });
+
+          // Clear credential cache to ensure stale tokens aren't reused
+          // This prevents infinite loops where cached invalid tokens are repeatedly used
+          clearKeychainCache(configDir);
+
           return {
             success: false,
             error: `Token refresh failed: ${errorDescription}`,
@@ -381,7 +390,7 @@ export async function ensureValidToken(
   }
 
   // Step 4: Refresh the token
-  const refreshResult = await refreshOAuthToken(creds.refreshToken);
+  const refreshResult = await refreshOAuthToken(creds.refreshToken, expandedConfigDir);
 
   if (!refreshResult.success || !refreshResult.accessToken || !refreshResult.refreshToken || !refreshResult.expiresAt) {
     console.error('[TokenRefresh:ensureValidToken] Token refresh failed:', refreshResult.error);
@@ -503,7 +512,7 @@ export async function reactiveTokenRefresh(
   }
 
   // Perform refresh
-  const refreshResult = await refreshOAuthToken(creds.refreshToken);
+  const refreshResult = await refreshOAuthToken(creds.refreshToken, expandedConfigDir);
 
   if (!refreshResult.success || !refreshResult.accessToken || !refreshResult.refreshToken || !refreshResult.expiresAt) {
     return {
