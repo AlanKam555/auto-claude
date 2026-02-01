@@ -14,7 +14,8 @@ import { taskStateManager } from '../../task-state-manager';
 import {
   getPlanPath,
   persistPlanStatus,
-  createPlanIfNotExists
+  createPlanIfNotExists,
+  resetStuckSubtasks
 } from './plan-file-utils';
 import { findTaskWorktree } from '../../worktree-paths';
 import { projectStore } from '../../project-store';
@@ -213,6 +214,14 @@ export function registerTaskExecutionHandlers(
         // Fresh start - PLANNING_STARTED transitions from backlog to planning
         console.warn('[TASK_START] Fresh start via PLANNING_STARTED');
         taskStateManager.handleUiEvent(taskId, { type: 'PLANNING_STARTED' }, task, project);
+      }
+
+      // Reset any stuck subtasks before starting execution
+      // This handles recovery from previous rate limits or crashes
+      const planPath = getPlanPath(project, task);
+      const resetResult = await resetStuckSubtasks(planPath, project.id);
+      if (resetResult.success && resetResult.resetCount > 0) {
+        console.warn(`[TASK_START] Reset ${resetResult.resetCount} stuck subtask(s) before starting`);
       }
 
       // Start file watcher for this task
