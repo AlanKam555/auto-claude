@@ -435,7 +435,12 @@ export async function ensureValidToken(
     // This is a critical error - we have new tokens but can't persist them
     console.error('[TokenRefresh:ensureValidToken] CRITICAL: Failed to persist refreshed tokens:', updateResult.error);
     console.error('[TokenRefresh:ensureValidToken] The new token will be lost on next restart!');
+    console.error('[TokenRefresh:ensureValidToken] Old credentials in keychain are now REVOKED and must be cleared on restart');
     persistenceFailed = true;
+
+    // Clear credential cache immediately to prevent serving revoked tokens from cache
+    // On restart, the revoked tokens will trigger re-authentication via Bugs #3 and #4 fixes
+    clearKeychainCache(expandedConfigDir);
     // Still return the new token for this session
   } else {
     if (isDebug) {
@@ -535,9 +540,15 @@ export async function reactiveTokenRefresh(
   let persistenceFailed = false;
   if (!updateResult.success) {
     console.error('[TokenRefresh:reactive] CRITICAL: Failed to persist refreshed tokens:', updateResult.error);
+    console.error('[TokenRefresh:reactive] Old credentials in keychain are now REVOKED and must be cleared on restart');
     persistenceFailed = true;
+
+    // Clear credential cache immediately to prevent serving revoked tokens from cache
+    // On restart, the revoked tokens will trigger re-authentication via Bugs #3 and #4 fixes
+    clearKeychainCache(expandedConfigDir);
   }
 
+  // Also clear cache on success to ensure fresh data is loaded next time
   clearKeychainCache(expandedConfigDir);
 
   if (onRefreshed) {
