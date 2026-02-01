@@ -12,6 +12,8 @@ import {
   RoadmapConfig
 } from './types';
 import type { IdeationConfig } from '../../shared/types';
+import { resetStuckSubtasks } from '../ipc-handlers/task/plan-file-utils';
+import { AUTO_BUILD_PATHS } from '../../shared/constants';
 
 /**
  * Main AgentManager - orchestrates agent process lifecycle
@@ -446,6 +448,22 @@ export class AgentManager extends EventEmitter {
         console.log('[AgentManager] Setting active profile to:', newProfileId);
         profileManager.setActiveProfile(newProfileId);
       }
+    }
+
+    // Reset stuck subtasks before restart to avoid picking up stale in-progress states
+    if (context.specId || context.specDir) {
+      const planPath = context.specDir
+        ? path.join(context.specDir, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN)
+        : path.join(context.projectPath, AUTO_BUILD_PATHS.SPECS_DIR, context.specId, AUTO_BUILD_PATHS.IMPLEMENTATION_PLAN);
+
+      console.log('[AgentManager] Resetting stuck subtasks before restart:', planPath);
+      resetStuckSubtasks(planPath).then(({ success, resetCount }) => {
+        if (success && resetCount > 0) {
+          console.log(`[AgentManager] Successfully reset ${resetCount} stuck subtask(s)`);
+        }
+      }).catch(err => {
+        console.warn('[AgentManager] Failed to reset stuck subtasks:', err);
+      });
     }
 
     // Kill current process
