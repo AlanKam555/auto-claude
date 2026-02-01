@@ -1005,6 +1005,9 @@ function createEmptyPRLogs(prNumber: number, repo: string, isFollowup: boolean):
 
 /**
  * Get PR logs file path
+ *
+ * Logs are stored at `.auto-claude/github/pr/logs_${prNumber}.json` within the project directory.
+ * This provides persistent storage for streaming log data during PR reviews.
  */
 function getPRLogsPath(project: Project, prNumber: number): string {
   return path.join(getGitHubDir(project), "pr", `logs_${prNumber}.json`);
@@ -1012,6 +1015,14 @@ function getPRLogsPath(project: Project, prNumber: number): string {
 
 /**
  * Load PR logs from disk
+ *
+ * This function is called by:
+ * 1. The IPC handler (GITHUB_PR_GET_LOGS) when the frontend polls for log updates
+ * 2. The frontend polling mechanism (every 1.5s during active review)
+ * 3. The fallback mechanism after review completion
+ *
+ * Returns null if the logs file doesn't exist yet (review hasn't started)
+ * or if the file is corrupted/unreadable.
  */
 function loadPRLogs(project: Project, prNumber: number): PRLogs | null {
   const logsPath = getPRLogsPath(project, prNumber);
@@ -1027,6 +1038,15 @@ function loadPRLogs(project: Project, prNumber: number): PRLogs | null {
 
 /**
  * Save PR logs to disk
+ *
+ * Called by PRLogCollector.save() to persist logs incrementally during review.
+ * This enables real-time streaming to the frontend via file-based polling.
+ *
+ * The logs file is written atomically and includes:
+ * - Phase status (pending/active/completed/failed)
+ * - Log entries for each phase (context, analysis, synthesis)
+ * - Timestamps for created_at and updated_at
+ * - Review metadata (PR number, repo, followup status)
  */
 function savePRLogs(project: Project, logs: PRLogs): void {
   const logsPath = getPRLogsPath(project, logs.pr_number);
@@ -1062,6 +1082,25 @@ function addLogEntry(logs: PRLogs, entry: PRLogEntry): boolean {
 /**
  * PR Log Collector - collects logs during review
  * Saves incrementally to disk so frontend can stream logs in real-time
+ *
+ * Log Streaming Architecture:
+ * ===========================
+ * This class implements a hybrid push/pull approach for real-time log streaming:
+ *
+ * 1. **File-Based Storage**: Logs are saved to disk every 3 entries (saveInterval)
+ *    - Location: .auto-claude/github/pr/logs_${prNumber}.json
+ *    - Format: JSON with phase status and log entries
+ *
+ * 2. **Push-Based Updates**: Emits IPC events (GITHUB_PR_LOGS_UPDATED) after each save
+ *    - Notifies frontend immediately when new logs are available
+ *    - Includes phase status and entry count for quick UI updates
+ *
+ * 3. **Pull-Based Polling**: Frontend polls via loadPRLogs() every 1.5s as fallback
+ *    - Ensures logs are displayed even if IPC events are missed
+ *    - Provides resilience against event delivery failures
+ *
+ * This hybrid approach ensures reliable real-time updates while maintaining
+ * simplicity and debuggability (logs are always on disk for inspection).
  */
 class PRLogCollector {
   private logs: PRLogs;
@@ -1156,6 +1195,31 @@ class PRLogCollector {
     this.save();
   }
 
+  /**
+   * Save logs to disk and notify frontend
+   *
+   * This method is called:
+   * 1. Every N entries (saveInterval = 3) for incremental streaming
+   * 2. When phase status changes (pending → active, active → completed)
+   * 3. On review finalization (success or failure)
+   *
+   * Two-step update mechanism:
+   * --------------------------
+   * 1. **File Write**: Persists logs to disk via savePRLogs()
+   *    - Creates/updates .auto-claude/github/pr/logs_${prNumber}.json
+   *    - Updates the `updated_at` timestamp
+   *
+   * 2. **IPC Push Event**: Sends GITHUB_PR_LOGS_UPDATED to renderer
+   *    - Contains phase status summary (pending/active/completed/failed)
+   *    - Includes entry count for detecting changes
+   *    - Enables instant UI updates without polling delay
+   *
+   * The frontend receives the IPC event and can optionally trigger an
+   * immediate poll via loadPRLogs() to fetch the latest log content.
+   * This is more efficient than polling alone, as the UI can update
+   * immediately when logs are available rather than waiting for the
+   * next poll interval (1.5s).
+   */
   save(): void {
     const logPath = getPRLogsPath(this.project, this.logs.pr_number);
     debugLog("PRLogCollector.save()", {
@@ -1168,9 +1232,11 @@ class PRLogCollector {
         entryCount: phase.entries.length
       }))
     });
+
+    // Step 1: Write logs to disk for persistence and polling-based retrieval
     savePRLogs(this.project, this.logs);
 
-    // Emit IPC event to notify renderer of log update
+    // Step 2: Emit IPC event to notify renderer of log update (push-based)
     // This enables push-based updates instead of relying solely on polling
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send(IPC_CHANNELS.GITHUB_PR_LOGS_UPDATED, {
@@ -1602,7 +1668,27 @@ export function registerPRHandlers(getMainWindow: () => BrowserWindow | null): v
     }
   );
 
-  // Get PR review logs
+  /**
+   * Get PR review logs (IPC Handler)
+   *
+   * This handler is called by the frontend's polling mechanism to retrieve
+   * the latest log data from disk.
+   *
+   * Polling Strategy (Frontend):
+   * ============================
+   * 1. **Initial Load**: When logs section expands, loads logs once via this handler
+   * 2. **Active Review Polling**: Every 1.5s while review is running (isReviewing = true)
+   * 3. **Final Refresh**: One final poll when review completes to capture final status
+   * 4. **Fallback Load**: 500ms delayed load after completion if polling missed final logs
+   *
+   * Why Polling + Push Hybrid?
+   * ===========================
+   * - Push (IPC events): Fast notifications when logs are saved by PRLogCollector
+   * - Pull (polling): Guarantees logs are fetched even if IPC events are missed
+   * - File-based: Simple, debuggable, survives app crashes/restarts
+   *
+   * Returns null if logs file doesn't exist yet (review hasn't started).
+   */
   ipcMain.handle(
     IPC_CHANNELS.GITHUB_PR_GET_LOGS,
     async (_, projectId: string, prNumber: number): Promise<PRLogs | null> => {
