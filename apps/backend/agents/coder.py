@@ -340,18 +340,16 @@ async def run_autonomous_agent(
         phase_model = get_phase_model(spec_dir, current_phase, model)
         phase_thinking_budget = get_phase_thinking_budget(spec_dir, current_phase)
 
-        # Create client (fresh context) with phase-specific model and thinking
-        # Use appropriate agent_type for correct tool permissions and thinking budget
-        client = create_client(
-            project_dir,
-            spec_dir,
-            phase_model,
-            agent_type="planner" if first_run else "coder",
-            max_thinking_tokens=phase_thinking_budget,
-        )
-
         # Generate appropriate prompt
         if first_run:
+            # Create client for planning phase
+            client = create_client(
+                project_dir,
+                spec_dir,
+                phase_model,
+                agent_type="planner",
+                max_thinking_tokens=phase_thinking_budget,
+            )
             prompt = generate_planner_prompt(spec_dir, project_dir)
             if planning_retry_context:
                 prompt += "\n\n" + planning_retry_context
@@ -463,6 +461,15 @@ async def run_autonomous_agent(
                 # Small delay before retry
                 await asyncio.sleep(AUTO_CONTINUE_DELAY_SECONDS)
                 continue  # Skip to next iteration
+
+            # Create client for coding phase (after file validation passes)
+            client = create_client(
+                project_dir,
+                spec_dir,
+                phase_model,
+                agent_type="coder",
+                max_thinking_tokens=phase_thinking_budget,
+            )
 
             # Get attempt count for recovery context
             attempt_count = recovery_manager.get_attempt_count(subtask_id)
