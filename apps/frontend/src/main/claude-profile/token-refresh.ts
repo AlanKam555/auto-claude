@@ -385,12 +385,25 @@ export async function ensureValidToken(
 
   if (!refreshResult.success || !refreshResult.accessToken || !refreshResult.refreshToken || !refreshResult.expiresAt) {
     console.error('[TokenRefresh:ensureValidToken] Token refresh failed:', refreshResult.error);
-    // CRITICAL: When token refresh fails server-side, the old token may already be revoked.
-    // Returning the old token here is a best-effort fallback, but callers should be aware
-    // that it will likely result in 401 errors. The comment "it might still work" is optimistic.
-    // This scenario indicates the user needs to re-authenticate via OAuth flow.
+
+    // Check for permanent errors (revoked/invalid tokens)
+    const isPermanentError = refreshResult.errorCode === 'invalid_grant' ||
+                             refreshResult.errorCode === 'invalid_client';
+
+    if (isPermanentError) {
+      // Return null for permanent errors to prevent infinite 401 loops
+      console.error('[TokenRefresh:ensureValidToken] Permanent error detected, returning null token');
+      return {
+        token: null,
+        wasRefreshed: false,
+        error: `Token refresh failed: ${refreshResult.error}`,
+        errorCode: refreshResult.errorCode
+      };
+    }
+
+    // For transient errors (network issues, etc.), return old token as best-effort fallback
     return {
-      token: creds.token,  // WARNING: This token may be invalid/revoked
+      token: creds.token,
       wasRefreshed: false,
       error: `Token refresh failed: ${refreshResult.error}`,
       errorCode: refreshResult.errorCode
