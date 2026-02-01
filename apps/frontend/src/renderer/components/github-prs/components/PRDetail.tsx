@@ -246,7 +246,6 @@ export function PRDetail({
   // Auto-expand logs section when review starts
   useEffect(() => {
     if (isReviewing) {
-      console.log('[PR Review Debug] Auto-expanding logs section because review started');
       setLogsExpanded(true);
     }
   }, [isReviewing]);
@@ -255,7 +254,6 @@ export function PRDetail({
   // This ensures users can see both logs AND findings/summary together after completion
   useEffect(() => {
     if (reviewResult?.success && !isReviewing) {
-      console.log('[PR Review Debug] Review completed successfully, ensuring both logs and analysis are visible');
       setLogsExpanded(true);
       setAnalysisExpanded(true);
     }
@@ -264,18 +262,10 @@ export function PRDetail({
   // Load logs when logs section is expanded or when reviewing (for live logs)
   useEffect(() => {
     if (logsExpanded && !logsLoadedRef.current && !isLoadingLogs) {
-      console.log('[PR Review Debug] Logs section expanded, loading logs for first time');
       logsLoadedRef.current = true;
       setIsLoadingLogs(true);
       onGetLogs()
         .then(logs => {
-          console.log('[PR Review Debug] Initial logs loaded:', {
-            hasLogs: !!logs,
-            isFollowup: logs?.is_followup,
-            contextEntries: logs?.phases?.context?.entries?.length || 0,
-            analysisEntries: logs?.phases?.analysis?.entries?.length || 0,
-            synthesisEntries: logs?.phases?.synthesis?.entries?.length || 0,
-          });
           setPrLogs(logs);
         })
         .catch((err) => {
@@ -294,11 +284,8 @@ export function PRDetail({
     const wasReviewing = wasReviewingRef.current;
     wasReviewingRef.current = isReviewing;
 
-    console.log('[PR Review Debug] isReviewing changed:', { wasReviewing, isReviewing });
-
     // Do one final refresh when review just completed to get final phase status
     if (wasReviewing && !isReviewing) {
-      console.log('[PR Review Debug] Review completed, fetching final logs');
       onGetLogs()
         .then(logs => setPrLogs(logs))
         .catch(err => console.error('Failed to fetch final logs:', err));
@@ -307,7 +294,6 @@ export function PRDetail({
 
     // Clear old logs when a new review starts to avoid showing stale status
     if (!wasReviewing && isReviewing) {
-      console.log('[PR Review Debug] Review started, clearing old logs');
       setPrLogs(null);
     }
 
@@ -315,18 +301,7 @@ export function PRDetail({
 
     const refreshLogs = async () => {
       try {
-        console.log('[PR Review Debug] Calling onGetLogs() for polling refresh');
         const logs = await onGetLogs();
-        console.log('[PR Review Debug] Logs loaded successfully:', {
-          hasLogs: !!logs,
-          isFollowup: logs?.is_followup,
-          contextStatus: logs?.phases?.context?.status,
-          analysisStatus: logs?.phases?.analysis?.status,
-          synthesisStatus: logs?.phases?.synthesis?.status,
-          contextEntries: logs?.phases?.context?.entries?.length || 0,
-          analysisEntries: logs?.phases?.analysis?.entries?.length || 0,
-          synthesisEntries: logs?.phases?.synthesis?.entries?.length || 0,
-        });
         setPrLogs(logs);
       } catch (err) {
         console.error('[PR Review Debug] Failed to refresh logs during polling:', err);
@@ -335,11 +310,9 @@ export function PRDetail({
     };
 
     // Refresh immediately, then every 1.5 seconds while reviewing for smoother streaming
-    console.log('[PR Review Debug] Starting polling interval (1.5s)');
     refreshLogs();
     const interval = setInterval(refreshLogs, 1500);
     return () => {
-      console.log('[PR Review Debug] Stopping polling interval');
       clearInterval(interval);
     };
   }, [isReviewing, onGetLogs]);
@@ -363,17 +336,9 @@ export function PRDetail({
 
     // Add a small delay to ensure backend has written the logs file
     const timer = setTimeout(() => {
-      console.log('[PR Review Debug] Fallback: Loading logs after review completion');
       setIsLoadingLogs(true);
       onGetLogs()
         .then(logs => {
-          console.log('[PR Review Debug] Fallback logs loaded:', {
-            hasLogs: !!logs,
-            isFollowup: logs?.is_followup,
-            contextEntries: logs?.phases?.context?.entries?.length || 0,
-            analysisEntries: logs?.phases?.analysis?.entries?.length || 0,
-            synthesisEntries: logs?.phases?.synthesis?.entries?.length || 0,
-          });
           setPrLogs(logs);
         })
         .catch(err => {
