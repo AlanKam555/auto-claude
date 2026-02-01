@@ -19,6 +19,7 @@ import { transformIdeaFromSnakeCase, transformSessionFromSnakeCase } from '../ip
 import { transformRoadmapFromSnakeCase } from '../ipc-handlers/roadmap/transformers';
 import type { RawIdea } from '../ipc-handlers/ideation/types';
 import { getPathDelimiter } from '../platform';
+import { debounce } from '../utils/debounce';
 
 /** Maximum length for status messages displayed in progress UI */
 const STATUS_MESSAGE_MAX_LENGTH = 200;
@@ -43,6 +44,14 @@ export class AgentQueueManager {
   private events: AgentEvents;
   private processManager: AgentProcessManager;
   private emitter: EventEmitter;
+  private debouncedPersistRoadmapProgress: (
+    projectPath: string,
+    phase: string,
+    progress: number,
+    message: string,
+    startedAt: string,
+    isRunning: boolean
+  ) => void;
 
   constructor(
     state: AgentState,
@@ -54,6 +63,16 @@ export class AgentQueueManager {
     this.events = events;
     this.processManager = processManager;
     this.emitter = emitter;
+
+    // Create debounced version of persistRoadmapProgress (300ms, leading + trailing)
+    // This limits file writes to ~3-4 per second while ensuring immediate first write
+    // and final state persistence after burst of updates
+    const { fn: debouncedFn } = debounce(
+      this.persistRoadmapProgress.bind(this),
+      300,
+      { leading: true, trailing: true }
+    );
+    this.debouncedPersistRoadmapProgress = debouncedFn;
   }
 
   /**
@@ -734,8 +753,8 @@ export class AgentQueueManager {
     // Track startedAt timestamp for progress persistence
     const roadmapStartedAt = new Date().toISOString();
 
-    // Persist initial progress state
-    this.persistRoadmapProgress(
+    // Persist initial progress state (debounced - will execute immediately due to leading: true)
+    this.debouncedPersistRoadmapProgress(
       projectPath,
       progressPhase,
       progressPercent,
@@ -772,8 +791,8 @@ export class AgentQueueManager {
       // Get status message for display
       const statusMessage = formatStatusMessage(log);
 
-      // Persist progress to disk for recovery after restart
-      this.persistRoadmapProgress(
+      // Persist progress to disk for recovery after restart (debounced to limit writes)
+      this.debouncedPersistRoadmapProgress(
         projectPath,
         progressPhase,
         progressPercent,
@@ -800,8 +819,8 @@ export class AgentQueueManager {
 
       const statusMessage = formatStatusMessage(log);
 
-      // Persist progress to disk (also on stderr to show activity)
-      this.persistRoadmapProgress(
+      // Persist progress to disk (debounced - also on stderr to show activity)
+      this.debouncedPersistRoadmapProgress(
         projectPath,
         progressPhase,
         progressPercent,
