@@ -748,21 +748,23 @@ export class AgentProcessManager {
       if (code !== 0) {
         console.log('[AgentProcess] Process failed with code:', code, 'for task:', taskId);
         const wasHandled = this.handleProcessFailure(taskId, allOutput, processType);
+
+        // Emit execution-progress event BEFORE early return to ensure frontend state machine receives it
+        if (currentPhase !== 'complete' && currentPhase !== 'failed') {
+          this.emitter.emit('execution-progress', taskId, {
+            phase: 'failed',
+            phaseProgress: 0,
+            overallProgress: this.events.calculateOverallProgress(currentPhase, phaseProgress),
+            message: `Process exited with code ${code}`,
+            sequenceNumber: ++sequenceNumber,
+            completedPhases: [...completedPhases]
+          });
+        }
+
         if (wasHandled) {
           this.emitter.emit('exit', taskId, code, processType);
           return;
         }
-      }
-
-      if (code !== 0 && currentPhase !== 'complete' && currentPhase !== 'failed') {
-        this.emitter.emit('execution-progress', taskId, {
-          phase: 'failed',
-          phaseProgress: 0,
-          overallProgress: this.events.calculateOverallProgress(currentPhase, phaseProgress),
-          message: `Process exited with code ${code}`,
-          sequenceNumber: ++sequenceNumber,
-          completedPhases: [...completedPhases]
-        });
       }
 
       this.emitter.emit('exit', taskId, code, processType);
