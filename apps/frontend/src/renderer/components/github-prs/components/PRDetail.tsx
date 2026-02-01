@@ -251,6 +251,16 @@ export function PRDetail({
     }
   }, [isReviewing]);
 
+  // Auto-expand both logs and analysis sections when review completes successfully
+  // This ensures users can see both logs AND findings/summary together after completion
+  useEffect(() => {
+    if (reviewResult?.success && !isReviewing) {
+      console.log('[PR Review Debug] Review completed successfully, ensuring both logs and analysis are visible');
+      setLogsExpanded(true);
+      setAnalysisExpanded(true);
+    }
+  }, [reviewResult?.success, isReviewing]);
+
   // Load logs when logs section is expanded or when reviewing (for live logs)
   useEffect(() => {
     if (logsExpanded && !logsLoadedRef.current && !isLoadingLogs) {
