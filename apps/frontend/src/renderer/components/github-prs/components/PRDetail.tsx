@@ -334,6 +334,49 @@ export function PRDetail({
     };
   }, [isReviewing, onGetLogs]);
 
+  // Fallback mechanism: Load logs after review completes if not already loaded
+  // This ensures logs are available even if polling didn't capture them during execution
+  useEffect(() => {
+    // Only trigger when a review has completed successfully
+    if (!reviewResult?.success || isReviewing) {
+      return;
+    }
+
+    // Check if we need to load logs:
+    // 1. No logs loaded yet, OR
+    // 2. Logs are from a different review (followup status mismatch)
+    const needsLogsLoad = !prLogs || (prLogs.is_followup !== reviewResult.isFollowupReview);
+
+    if (!needsLogsLoad) {
+      return;
+    }
+
+    // Add a small delay to ensure backend has written the logs file
+    const timer = setTimeout(() => {
+      console.log('[PR Review Debug] Fallback: Loading logs after review completion');
+      setIsLoadingLogs(true);
+      onGetLogs()
+        .then(logs => {
+          console.log('[PR Review Debug] Fallback logs loaded:', {
+            hasLogs: !!logs,
+            isFollowup: logs?.is_followup,
+            contextEntries: logs?.phases?.context?.entries?.length || 0,
+            analysisEntries: logs?.phases?.analysis?.entries?.length || 0,
+            synthesisEntries: logs?.phases?.synthesis?.entries?.length || 0,
+          });
+          setPrLogs(logs);
+        })
+        .catch(err => {
+          console.error('[PR Review Debug] Failed to load fallback logs:', err);
+        })
+        .finally(() => {
+          setIsLoadingLogs(false);
+        });
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [reviewResult, isReviewing, prLogs, onGetLogs]);
+
   // Reset logs state when PR changes
   useEffect(() => {
     logsLoadedRef.current = false;
