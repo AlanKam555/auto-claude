@@ -718,6 +718,13 @@ export function registerTaskExecutionHandlers(
 
           console.warn('[TASK_UPDATE_STATUS] Auto-starting task:', taskId);
 
+          // Reset any stuck subtasks before starting execution
+          // This handles recovery from previous rate limits or crashes
+          const resetResult = await resetStuckSubtasks(planPath, project.id);
+          if (resetResult.success && resetResult.resetCount > 0) {
+            console.warn(`[TASK_UPDATE_STATUS] Reset ${resetResult.resetCount} stuck subtask(s) before starting`);
+          }
+
           // Start file watcher for this task
           fileWatcher.watch(taskId, specDir);
 
