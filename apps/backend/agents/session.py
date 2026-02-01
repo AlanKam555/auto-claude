@@ -21,7 +21,7 @@ from progress import (
     count_subtasks_detailed,
     is_build_complete,
 )
-from recovery import RecoveryManager
+from recovery import RecoveryManager, check_and_recover, reset_subtask
 from security.tool_input_validator import get_safe_tool_input
 from task_logger import (
     LogEntryType,
@@ -242,7 +242,10 @@ async def post_session_processing(
                 "info",
             )
 
-            # Load implementation plan
+            # Use recovery system's reset_subtask for consistency
+            reset_subtask(spec_dir, project_dir, subtask_id)
+
+            # Also reset in implementation plan
             plan = load_implementation_plan(spec_dir)
             if plan:
                 # Find and reset the subtask
@@ -280,6 +283,40 @@ async def post_session_processing(
                 print_status(
                     "Warning: Could not load implementation plan for reset", "warning"
                 )
+        else:
+            # Non-rate-limit error - use automatic recovery flow
+            error_message = error_info.get("message", "Subtask not marked as completed") if error_info else "Subtask not marked as completed"
+
+            recovery_action = check_and_recover(
+                spec_dir=spec_dir,
+                project_dir=project_dir,
+                subtask_id=subtask_id,
+                error=error_message,
+            )
+
+            if recovery_action:
+                print_status(f"Recovery action: {recovery_action.action}", "info")
+                print_status(f"Reason: {recovery_action.reason}", "info")
+
+                if recovery_action.action == "rollback":
+                    # Rollback to last good commit
+                    print_status(f"Rolling back to {recovery_action.target[:8]}", "warning")
+                    if recovery_manager.rollback_to_commit(recovery_action.target):
+                        print_status("Rollback successful", "success")
+                    else:
+                        print_status("Rollback failed", "error")
+
+                elif recovery_action.action == "retry":
+                    # Reset subtask for retry with different approach
+                    print_status(f"Resetting subtask {subtask_id} for retry", "info")
+                    reset_subtask(spec_dir, project_dir, subtask_id)
+                    print_status("Subtask reset - will retry with different approach", "success")
+
+                elif recovery_action.action in ("skip", "escalate"):
+                    # Mark subtask as stuck for human intervention
+                    print_status(f"Marking subtask {subtask_id} as stuck", "warning")
+                    recovery_manager.mark_subtask_stuck(subtask_id, recovery_action.reason)
+                    print_status("Subtask marked for human intervention", "warning")
 
         # Still record commit if one was made (partial progress)
         if commit_after and commit_after != commit_before:
@@ -343,6 +380,42 @@ async def post_session_processing(
             approach="Session ended without progress",
             error=f"Subtask status is {subtask_status}",
         )
+
+        # Automatic recovery flow - determine and execute recovery action
+        error_message = f"Subtask status is {subtask_status}"
+        if error_info:
+            error_message = error_info.get("message", error_message)
+
+        recovery_action = check_and_recover(
+            spec_dir=spec_dir,
+            project_dir=project_dir,
+            subtask_id=subtask_id,
+            error=error_message,
+        )
+
+        if recovery_action:
+            print_status(f"Recovery action: {recovery_action.action}", "info")
+            print_status(f"Reason: {recovery_action.reason}", "info")
+
+            if recovery_action.action == "rollback":
+                # Rollback to last good commit
+                print_status(f"Rolling back to {recovery_action.target[:8]}", "warning")
+                if recovery_manager.rollback_to_commit(recovery_action.target):
+                    print_status("Rollback successful", "success")
+                else:
+                    print_status("Rollback failed", "error")
+
+            elif recovery_action.action == "retry":
+                # Reset subtask for retry with different approach
+                print_status(f"Resetting subtask {subtask_id} for retry", "info")
+                reset_subtask(spec_dir, project_dir, subtask_id)
+                print_status("Subtask reset - will retry with different approach", "success")
+
+            elif recovery_action.action in ("skip", "escalate"):
+                # Mark subtask as stuck for human intervention
+                print_status(f"Marking subtask {subtask_id} as stuck", "warning")
+                recovery_manager.mark_subtask_stuck(subtask_id, recovery_action.reason)
+                print_status("Subtask marked for human intervention", "warning")
 
         # Record Linear session result (if enabled)
         if linear_enabled:
