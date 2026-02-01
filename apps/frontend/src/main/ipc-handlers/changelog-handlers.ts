@@ -101,32 +101,33 @@ export function registerChangelogHandlers(
     }
   );
 
-  ipcMain.on(
+  ipcMain.handle(
     IPC_CHANNELS.CHANGELOG_GENERATE,
-    async (_, request: ChangelogGenerationRequest) => {
-      const mainWindow = getMainWindow();
-      if (!mainWindow) return;
-
+    async (_, request: ChangelogGenerationRequest): Promise<IPCResult<void>> => {
       const project = projectStore.getProject(request.projectId);
       if (!project) {
-        mainWindow.webContents.send(
-          IPC_CHANNELS.CHANGELOG_GENERATION_ERROR,
-          request.projectId,
-          'Project not found'
-        );
-        return;
+        return { success: false, error: 'Project not found' };
       }
 
-      // Load specs for selected tasks (only in tasks mode)
-      let specs: TaskSpecContent[] = [];
-      if (request.sourceMode === 'tasks' && request.taskIds && request.taskIds.length > 0) {
-        const tasks = projectStore.getTasks(request.projectId);
-        const specsBaseDir = getSpecsDir(project.autoBuildPath);
-        specs = await changelogService.loadTaskSpecs(project.path, request.taskIds, tasks, specsBaseDir);
-      }
+      try {
+        // Load specs for selected tasks (only in tasks mode)
+        let specs: TaskSpecContent[] = [];
+        if (request.sourceMode === 'tasks' && request.taskIds && request.taskIds.length > 0) {
+          const tasks = projectStore.getTasks(request.projectId);
+          const specsBaseDir = getSpecsDir(project.autoBuildPath);
+          specs = await changelogService.loadTaskSpecs(project.path, request.taskIds, tasks, specsBaseDir);
+        }
 
-      // Start generation
-      changelogService.generateChangelog(request.projectId, project.path, request, specs);
+        // Start generation (progress/completion/errors will be sent via event handlers)
+        changelogService.generateChangelog(request.projectId, project.path, request, specs);
+
+        return { success: true };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to start changelog generation'
+        };
+      }
     }
   );
 
