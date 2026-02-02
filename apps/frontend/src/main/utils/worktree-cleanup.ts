@@ -20,7 +20,7 @@ import { rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { getToolPath } from '../cli-tool-manager';
 import { getIsolatedGitEnv } from './git-isolation';
-import { getTaskWorktreeDir, isPathWithinBase } from '../worktree-paths';
+import { getTaskWorktreeDir, getTerminalWorktreeDir, isPathWithinBase } from '../worktree-paths';
 
 /**
  * Options for worktree cleanup operation
@@ -179,11 +179,15 @@ export async function cleanupWorktree(options: WorktreeCleanupOptions): Promise<
   const warnings: string[] = [];
   let autoCommitted = false;
 
-  // Security: Validate that worktreePath is within the expected worktree directory
+  // Security: Validate that worktreePath is within the expected worktree directories
   // This prevents path traversal attacks and accidental deletion of wrong directories
-  const expectedBase = getTaskWorktreeDir(projectPath);
-  if (!isPathWithinBase(worktreePath, expectedBase)) {
-    console.error(`${logPrefix} Security: Path validation failed - worktree path is outside expected directory`);
+  // Supports both task worktrees (.auto-claude/worktrees/tasks) and terminal worktrees (.auto-claude/worktrees/terminal)
+  const taskBase = getTaskWorktreeDir(projectPath);
+  const terminalBase = getTerminalWorktreeDir(projectPath);
+  const isValidPath = isPathWithinBase(worktreePath, taskBase) || isPathWithinBase(worktreePath, terminalBase);
+
+  if (!isValidPath) {
+    console.error(`${logPrefix} Security: Path validation failed - worktree path is outside expected directories`);
     return {
       success: false,
       warnings: ['Invalid worktree path']
