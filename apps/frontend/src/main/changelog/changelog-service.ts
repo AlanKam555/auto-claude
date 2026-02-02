@@ -265,7 +265,7 @@ export class ChangelogService extends EventEmitter {
     const specsDir = path.join(projectPath, specsBaseDir || AUTO_BUILD_PATHS.SPECS_DIR);
 
     return tasks
-      .filter(task => isCompletedTask(task.status) && !task.metadata?.archivedAt)
+      .filter(task => isCompletedTask(task.status, task.reviewReason) && !task.metadata?.archivedAt)
       .map(task => {
         const specDir = path.join(specsDir, task.specId);
         const hasSpecs = existsSync(specDir) && existsSync(path.join(specDir, AUTO_BUILD_PATHS.SPEC_FILE));
