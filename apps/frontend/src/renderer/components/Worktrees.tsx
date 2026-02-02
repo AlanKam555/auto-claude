@@ -175,17 +175,19 @@ export function Worktrees({ projectId }: WorktreesProps) {
       console.log('[Worktrees] Task worktrees result:', taskResult);
       console.log('[Worktrees] Terminal worktrees result:', terminalResult);
 
-      if (taskResult.success && taskResult.data) {
-        setWorktrees(taskResult.data.worktrees);
+      if (taskResult.success) {
+        // Always update state when successful, even if data is null/undefined
+        setWorktrees(taskResult.data?.worktrees || []);
       } else {
         setError(taskResult.error || 'Failed to load task worktrees');
       }
 
-      if (terminalResult.success && terminalResult.data) {
+      if (terminalResult.success) {
+        // Always update state when successful, defaulting to empty array if data is null/undefined
         console.log('[Worktrees] Setting terminal worktrees:', terminalResult.data);
-        setTerminalWorktrees(terminalResult.data);
+        setTerminalWorktrees(terminalResult.data || []);
       } else {
-        console.warn('[Worktrees] Terminal worktrees fetch failed or empty:', terminalResult);
+        console.warn('[Worktrees] Terminal worktrees fetch failed:', terminalResult);
       }
     } catch (err) {
       console.error('[Worktrees] Error loading worktrees:', err);
