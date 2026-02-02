@@ -203,6 +203,9 @@ async function executeQuery(
   const [pythonExe, baseArgs] = parsePythonCommand(pythonCmd);
 
   return new Promise((resolve) => {
+    // Promise guard flag to prevent double resolution
+    let resolved = false;
+
     const fullArgs = [...baseArgs, scriptPath, command, ...args];
 
     // Get Python environment (includes PYTHONPATH for bundled/venv packages)
@@ -228,11 +231,14 @@ async function executeQuery(
     });
 
     proc.on('close', (code) => {
+      if (resolved) return;
+
       // The Python script outputs JSON to stdout (even for errors)
       // Always try to parse stdout first to get the actual error message
       if (stdout) {
         try {
           const result = JSON.parse(stdout);
+          resolved = true;
           resolve(result);
           return;
         } catch {
@@ -240,9 +246,11 @@ async function executeQuery(
           if (code !== 0) {
             const errorMsg = stderr || stdout || `Process exited with code ${code}`;
             console.error('[MemoryService] Python error:', errorMsg);
+            resolved = true;
             resolve({ success: false, error: errorMsg });
             return;
           }
+          resolved = true;
           resolve({ success: false, error: `Invalid JSON response: ${stdout}` });
           return;
         }
@@ -250,15 +258,20 @@ async function executeQuery(
       // No stdout - use stderr or generic error
       const errorMsg = stderr || `Process exited with code ${code}`;
       console.error('[MemoryService] Python error (no stdout):', errorMsg);
+      resolved = true;
       resolve({ success: false, error: errorMsg });
     });
 
     proc.on('error', (err) => {
+      if (resolved) return;
+      resolved = true;
       resolve({ success: false, error: err.message });
     });
 
     // Handle timeout
     setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
       proc.kill();
       resolve({ success: false, error: 'Query timed out' });
     }, timeout);
@@ -351,6 +364,9 @@ async function executeSemanticQuery(
   }
 
   return new Promise((resolve) => {
+    // Promise guard flag to prevent double resolution
+    let resolved = false;
+
     const fullArgs = [...baseArgs, scriptPath, 'semantic-search', ...args];
     const proc = spawn(pythonExe, fullArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -370,33 +386,43 @@ async function executeSemanticQuery(
     });
 
     proc.on('close', (code) => {
+      if (resolved) return;
+
       // The Python script outputs JSON to stdout (even for errors)
       if (stdout) {
         try {
           const result = JSON.parse(stdout);
+          resolved = true;
           resolve(result);
           return;
         } catch {
           if (code !== 0) {
             const errorMsg = stderr || stdout || `Process exited with code ${code}`;
             console.error('[MemoryService] Semantic search error:', errorMsg);
+            resolved = true;
             resolve({ success: false, error: errorMsg });
             return;
           }
+          resolved = true;
           resolve({ success: false, error: `Invalid JSON response: ${stdout}` });
           return;
         }
       }
       const errorMsg = stderr || `Process exited with code ${code}`;
       console.error('[MemoryService] Semantic search error (no stdout):', errorMsg);
+      resolved = true;
       resolve({ success: false, error: errorMsg });
     });
 
     proc.on('error', (err) => {
+      if (resolved) return;
+      resolved = true;
       resolve({ success: false, error: err.message });
     });
 
     setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
       proc.kill();
       resolve({ success: false, error: 'Semantic search timed out' });
     }, timeout);
