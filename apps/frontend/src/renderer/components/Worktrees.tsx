@@ -183,9 +183,11 @@ export function Worktrees({ projectId }: WorktreesProps) {
       }
 
       if (terminalResult.success) {
-        // Always update state when successful, defaulting to empty array if data is null/undefined
-        console.log('[Worktrees] Setting terminal worktrees:', terminalResult.data);
-        setTerminalWorktrees(terminalResult.data || []);
+        // Always update state when successful, ensuring a new array reference to force React re-render
+        // This is critical when data is an empty array - we need a new reference to update the UI
+        const newWorktrees = Array.isArray(terminalResult.data) ? [...terminalResult.data] : [];
+        console.log('[Worktrees] Setting terminal worktrees:', newWorktrees);
+        setTerminalWorktrees(newWorktrees);
       } else {
         console.warn('[Worktrees] Terminal worktrees fetch failed:', terminalResult);
       }
