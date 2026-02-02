@@ -443,6 +443,10 @@ export function Worktrees({ projectId }: WorktreesProps) {
       if (result.success) {
         // Refresh worktrees after successful delete
         await loadWorktrees();
+        toast({
+          title: t('common:actions.success'),
+          description: t('common:worktrees.deleteSuccess', { branch: terminalWorktreeToDelete.name }),
+        });
         setTerminalWorktreeToDelete(null);
       } else {
         setError(result.error || 'Failed to delete terminal worktree');
@@ -935,7 +939,7 @@ export function Worktrees({ projectId }: WorktreesProps) {
       </AlertDialog>
 
       {/* Terminal Worktree Delete Confirmation Dialog */}
-      <AlertDialog open={!!terminalWorktreeToDelete} onOpenChange={(open) => !open && setTerminalWorktreeToDelete(null)}>
+      <AlertDialog open={!!terminalWorktreeToDelete} onOpenChange={(open) => !open && !isDeletingTerminal && setTerminalWorktreeToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Terminal Worktree?</AlertDialogTitle>
