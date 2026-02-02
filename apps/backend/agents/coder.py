@@ -75,6 +75,9 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+# Retry configuration for subtask execution
+MAX_SUBTASK_RETRIES = 5  # Maximum number of retry attempts before marking subtask as stuck
+
 
 # =============================================================================
 # FILE VALIDATION UTILITIES
@@ -590,7 +593,7 @@ async def run_autonomous_agent(
 
             # Check for stuck subtasks
             attempt_count = recovery_manager.get_attempt_count(subtask_id)
-            if not success and attempt_count >= 3:
+            if not success and attempt_count >= MAX_SUBTASK_RETRIES:
                 recovery_manager.mark_subtask_stuck(
                     subtask_id, f"Failed after {attempt_count} attempts"
                 )
