@@ -223,6 +223,7 @@ export const usePRReviewStore = create<PRReviewStoreState>((set, get) => ({
  * regardless of which component is mounted.
  */
 let prReviewListenersInitialized = false;
+let cleanupFunctions: (() => void)[] = [];
 
 export function initializePRReviewListeners(): void {
   if (prReviewListenersInitialized) {
@@ -231,40 +232,74 @@ export function initializePRReviewListeners(): void {
 
   const store = usePRReviewStore.getState();
 
+  // Check if GitHub PR Review API is available
+  if (!window.electronAPI?.github?.onPRReviewProgress) {
+    console.warn('[GitHub PR Store] GitHub PR Review API not available, skipping listener setup');
+    return;
+  }
+
   // Listen for PR review progress events
-  window.electronAPI.github.onPRReviewProgress(
-    (projectId: string, progress: PRReviewProgress) => {
-      store.setPRReviewProgress(projectId, progress);
-    }
-  );
+  const progressHandler = (projectId: string, progress: PRReviewProgress) => {
+    store.setPRReviewProgress(projectId, progress);
+  };
+  window.electronAPI.github.onPRReviewProgress(progressHandler);
 
   // Listen for PR review completion events
-  window.electronAPI.github.onPRReviewComplete(
-    (projectId: string, result: PRReviewResult) => {
-      store.setPRReviewResult(projectId, result);
-    }
-  );
+  const completeHandler = (projectId: string, result: PRReviewResult) => {
+    store.setPRReviewResult(projectId, result);
+  };
+  window.electronAPI.github.onPRReviewComplete(completeHandler);
 
   // Listen for PR review error events
-  window.electronAPI.github.onPRReviewError(
-    (projectId: string, data: { prNumber: number; error: string }) => {
-      store.setPRReviewError(projectId, data.prNumber, data.error);
-    }
-  );
+  const errorHandler = (projectId: string, data: { prNumber: number; error: string }) => {
+    store.setPRReviewError(projectId, data.prNumber, data.error);
+  };
+  window.electronAPI.github.onPRReviewError(errorHandler);
 
   // Listen for GitHub auth changes - clear all PR review state when account changes
-  window.electronAPI.github.onGitHubAuthChanged(
-    (data: { oldUsername: string | null; newUsername: string }) => {
-      console.warn(
-        `[PRReviewStore] GitHub auth changed from "${data.oldUsername ?? 'none'}" to "${data.newUsername}". ` +
-        `Clearing all PR review state.`
-      );
-      // Clear all PR review state since the token has changed
-      usePRReviewStore.setState({ prReviews: {} });
-    }
-  );
+  const authChangedHandler = (data: { oldUsername: string | null; newUsername: string }) => {
+    console.warn(
+      `[PRReviewStore] GitHub auth changed from "${data.oldUsername ?? 'none'}" to "${data.newUsername}". ` +
+      `Clearing all PR review state.`
+    );
+    // Clear all PR review state since the token has changed
+    usePRReviewStore.setState({ prReviews: {} });
+  };
+  window.electronAPI.github.onGitHubAuthChanged(authChangedHandler);
+
+  // Store cleanup functions if the API supports removeListener
+  // Note: These are optional methods that may not exist in the ElectronAPI
+  const api = window.electronAPI.github as unknown as Record<string, unknown>;
+  if (typeof api.removePRReviewProgress === 'function') {
+    cleanupFunctions.push(() => (api.removePRReviewProgress as (handler: unknown) => void)?.(progressHandler));
+  }
+  if (typeof api.removePRReviewComplete === 'function') {
+    cleanupFunctions.push(() => (api.removePRReviewComplete as (handler: unknown) => void)?.(completeHandler));
+  }
+  if (typeof api.removePRReviewError === 'function') {
+    cleanupFunctions.push(() => (api.removePRReviewError as (handler: unknown) => void)?.(errorHandler));
+  }
+  if (typeof api.removeGitHubAuthChanged === 'function') {
+    cleanupFunctions.push(() => (api.removeGitHubAuthChanged as (handler: unknown) => void)?.(authChangedHandler));
+  }
 
   prReviewListenersInitialized = true;
+}
+
+/**
+ * Cleanup PR review listeners.
+ * Call this when the app is being unmounted or during hot-reload.
+ */
+export function cleanupPRReviewListeners(): void {
+  for (const cleanup of cleanupFunctions) {
+    try {
+      cleanup();
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+  cleanupFunctions = [];
+  prReviewListenersInitialized = false;
 }
 
 /**
