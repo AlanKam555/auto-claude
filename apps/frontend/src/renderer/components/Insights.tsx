@@ -198,20 +198,23 @@ export function Insights({ projectId }: InsightsProps) {
     return await renameSession(projectId, sessionId, newTitle);
   };
 
-  const handleCreateTask = async (message: InsightsChatMessage) => {
-    if (!message.suggestedTask) return;
-
-    setCreatingTask(message.id);
+  const handleCreateTask = async (
+    messageId: string,
+    taskIndex: number,
+    taskData: { title: string; description: string; metadata?: any }
+  ) => {
+    const taskKey = `${messageId}-${taskIndex}`;
+    setCreatingTask(taskKey);
     try {
       const task = await createTaskFromSuggestion(
         projectId,
-        message.suggestedTask.title,
-        message.suggestedTask.description,
-        message.suggestedTask.metadata
+        taskData.title,
+        taskData.description,
+        taskData.metadata
       );
 
       if (task) {
-        setTaskCreated(prev => new Set(prev).add(message.id));
+        setTaskCreated(prev => new Set(prev).add(taskKey));
         // Reload tasks to show the new task in the kanban
         loadTasks(projectId);
       }
@@ -336,9 +339,9 @@ export function Insights({ projectId }: InsightsProps) {
                 key={message.id}
                 message={message}
                 markdownComponents={markdownComponents}
-                onCreateTask={() => handleCreateTask(message)}
-                isCreatingTask={creatingTask === message.id}
-                taskCreated={taskCreated.has(message.id)}
+                onCreateTask={handleCreateTask}
+                creatingTask={creatingTask}
+                taskCreated={taskCreated}
               />
             ))}
 
@@ -428,16 +431,16 @@ export function Insights({ projectId }: InsightsProps) {
 interface MessageBubbleProps {
   message: InsightsChatMessage;
   markdownComponents: Components;
-  onCreateTask: () => void;
-  isCreatingTask: boolean;
-  taskCreated: boolean;
+  onCreateTask: (messageId: string, taskIndex: number, taskData: { title: string; description: string; metadata?: any }) => void;
+  creatingTask: string | null;
+  taskCreated: Set<string>;
 }
 
 function MessageBubble({
   message,
   markdownComponents,
   onCreateTask,
-  isCreatingTask,
+  creatingTask,
   taskCreated
 }: MessageBubbleProps) {
   const isUser = message.role === 'user';
@@ -471,74 +474,84 @@ function MessageBubble({
           <ToolUsageHistory tools={message.toolsUsed} />
         )}
 
-        {/* Task suggestion card */}
-        {message.suggestedTask && (
-          <Card className="mt-3 border-primary/20 bg-primary/5">
-            <CardContent className="p-4">
-              <div className="mb-2 flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-primary" />
-                <span className="text-sm font-medium text-primary">
-                  Suggested Task
-                </span>
-              </div>
-              <h4 className="mb-2 font-medium text-foreground">
-                {message.suggestedTask.title}
-              </h4>
-              <p className="mb-3 text-sm text-muted-foreground">
-                {message.suggestedTask.description}
-              </p>
-              {message.suggestedTask.metadata && (
-                <div className="mb-3 flex flex-wrap gap-2">
-                  {message.suggestedTask.metadata.category && (
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        'text-xs',
-                        TASK_CATEGORY_COLORS[message.suggestedTask.metadata.category]
-                      )}
+        {/* Task suggestion cards */}
+        {message.suggestedTasks && message.suggestedTasks.length > 0 && (
+          <div className="mt-3 space-y-3">
+            {message.suggestedTasks.map((task, index) => {
+              const taskKey = `${message.id}-${index}`;
+              const isCreating = creatingTask === taskKey;
+              const isCreated = taskCreated.has(taskKey);
+
+              return (
+                <Card key={taskKey} className="border-primary/20 bg-primary/5">
+                  <CardContent className="p-4">
+                    <div className="mb-2 flex items-center gap-2">
+                      <Sparkles className="h-4 w-4 text-primary" />
+                      <span className="text-sm font-medium text-primary">
+                        Suggested Task
+                      </span>
+                    </div>
+                    <h4 className="mb-2 font-medium text-foreground">
+                      {task.title}
+                    </h4>
+                    <p className="mb-3 text-sm text-muted-foreground">
+                      {task.description}
+                    </p>
+                    {task.metadata && (
+                      <div className="mb-3 flex flex-wrap gap-2">
+                        {task.metadata.category && (
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              'text-xs',
+                              TASK_CATEGORY_COLORS[task.metadata.category]
+                            )}
+                          >
+                            {TASK_CATEGORY_LABELS[task.metadata.category] ||
+                              task.metadata.category}
+                          </Badge>
+                        )}
+                        {task.metadata.complexity && (
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              'text-xs',
+                              TASK_COMPLEXITY_COLORS[task.metadata.complexity]
+                            )}
+                          >
+                            {TASK_COMPLEXITY_LABELS[task.metadata.complexity] ||
+                              task.metadata.complexity}
+                          </Badge>
+                        )}
+                      </div>
+                    )}
+                    <Button
+                      size="sm"
+                      onClick={() => onCreateTask(message.id, index, task)}
+                      disabled={isCreating || isCreated}
                     >
-                      {TASK_CATEGORY_LABELS[message.suggestedTask.metadata.category] ||
-                        message.suggestedTask.metadata.category}
-                    </Badge>
-                  )}
-                  {message.suggestedTask.metadata.complexity && (
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        'text-xs',
-                        TASK_COMPLEXITY_COLORS[message.suggestedTask.metadata.complexity]
+                      {isCreating ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Creating...
+                        </>
+                      ) : isCreated ? (
+                        <>
+                          <CheckCircle2 className="mr-2 h-4 w-4" />
+                          Task Created
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="mr-2 h-4 w-4" />
+                          Create Task
+                        </>
                       )}
-                    >
-                      {TASK_COMPLEXITY_LABELS[message.suggestedTask.metadata.complexity] ||
-                        message.suggestedTask.metadata.complexity}
-                    </Badge>
-                  )}
-                </div>
-              )}
-              <Button
-                size="sm"
-                onClick={onCreateTask}
-                disabled={isCreatingTask || taskCreated}
-              >
-                {isCreatingTask ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Creating...
-                  </>
-                ) : taskCreated ? (
-                  <>
-                    <CheckCircle2 className="mr-2 h-4 w-4" />
-                    Task Created
-                  </>
-                ) : (
-                  <>
-                    <Plus className="mr-2 h-4 w-4" />
-                    Create Task
-                  </>
-                )}
-              </Button>
-            </CardContent>
-          </Card>
+                    </Button>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>
