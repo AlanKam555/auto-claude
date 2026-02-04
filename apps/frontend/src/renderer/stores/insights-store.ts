@@ -39,7 +39,7 @@ interface InsightsState {
   setCurrentTool: (tool: ToolUsage | null) => void;
   addToolUsage: (tool: ToolUsage) => void;
   clearToolsUsed: () => void;
-  finalizeStreamingMessage: (suggestedTask?: InsightsChatMessage['suggestedTask']) => void;
+  finalizeStreamingMessage: (suggestedTasks?: InsightsChatMessage['suggestedTasks']) => void;
   clearSession: () => void;
   setLoadingSessions: (loading: boolean) => void;
 }
@@ -139,12 +139,12 @@ export const useInsightsStore = create<InsightsState>((set, _get) => ({
 
   clearToolsUsed: () => set({ toolsUsed: [] }),
 
-  finalizeStreamingMessage: (suggestedTask) =>
+  finalizeStreamingMessage: (suggestedTasks) =>
     set((state) => {
       const content = state.streamingContent;
       const toolsUsed = state.toolsUsed.length > 0 ? [...state.toolsUsed] : undefined;
 
-      if (!content && !suggestedTask && !toolsUsed) {
+      if (!content && !suggestedTasks && !toolsUsed) {
         return { streamingContent: '', toolsUsed: [] };
       }
 
@@ -153,7 +153,7 @@ export const useInsightsStore = create<InsightsState>((set, _get) => ({
         role: 'assistant',
         content,
         timestamp: new Date(),
-        suggestedTask,
+        suggestedTasks,
         toolsUsed
       };
 
@@ -380,7 +380,7 @@ export function setupInsightsListeners(): () => void {
         case 'task_suggestion':
           // Finalize the message with task suggestion
           store().setCurrentTool(null);
-          store().finalizeStreamingMessage(chunk.suggestedTask);
+          store().finalizeStreamingMessage(chunk.suggestedTasks);
           break;
         case 'done':
           // Finalize any remaining content
