@@ -40,7 +40,14 @@ interface PRReviewStoreState {
   // Selectors
   getPRReviewState: (projectId: string, prNumber: number) => PRReviewState | null;
   getActivePRReviews: (projectId: string) => PRReviewState[];
+
+  // Refresh callbacks - called when reviews complete
+  registerRefreshCallback: (callback: () => void) => void;
+  unregisterRefreshCallback: (callback: () => void) => void;
 }
+
+// Store for refresh callbacks outside of Zustand state (to avoid re-renders on registration)
+const refreshCallbacks = new Set<() => void>();
 
 export const usePRReviewStore = create<PRReviewStoreState>((set, get) => ({
   // Initial state
@@ -214,6 +221,15 @@ export const usePRReviewStore = create<PRReviewStoreState>((set, get) => ({
     return Object.values(prReviews).filter(
       review => review.projectId === projectId && review.isReviewing
     );
+  },
+
+  // Refresh callbacks - called when reviews complete
+  registerRefreshCallback: (callback: () => void) => {
+    refreshCallbacks.add(callback);
+  },
+
+  unregisterRefreshCallback: (callback: () => void) => {
+    refreshCallbacks.delete(callback);
   }
 }));
 
@@ -247,6 +263,14 @@ export function initializePRReviewListeners(): void {
   // Listen for PR review completion events
   const completeHandler = (projectId: string, result: PRReviewResult) => {
     store.setPRReviewResult(projectId, result);
+    // Trigger all registered refresh callbacks when review completes
+    refreshCallbacks.forEach(callback => {
+      try {
+        callback();
+      } catch (error) {
+        console.error('[PRReviewStore] Error in refresh callback:', error);
+      }
+    });
   };
   window.electronAPI.github.onPRReviewComplete(completeHandler);
 

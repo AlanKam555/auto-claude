@@ -99,6 +99,8 @@ export function useGitHubPRs(
   const getPRReviewState = usePRReviewStore((state) => state.getPRReviewState);
   const getActivePRReviews = usePRReviewStore((state) => state.getActivePRReviews);
   const setNewCommitsCheckAction = usePRReviewStore((state) => state.setNewCommitsCheck);
+  const registerRefreshCallback = usePRReviewStore((state) => state.registerRefreshCallback);
+  const unregisterRefreshCallback = usePRReviewStore((state) => state.unregisterRefreshCallback);
 
   // Get review state for the selected PR from the store
   const selectedPRReviewState = useMemo(() => {
@@ -262,6 +264,19 @@ export function useGitHubPRs(
       }
     };
   }, []);
+
+  // Register refresh callback to auto-refresh PR list when reviews complete
+  useEffect(() => {
+    if (!projectId) return;
+
+    // Register fetchPRs to be called when any PR review completes
+    registerRefreshCallback(fetchPRs);
+
+    // Unregister on unmount or when dependencies change
+    return () => {
+      unregisterRefreshCallback(fetchPRs);
+    };
+  }, [projectId, fetchPRs, registerRefreshCallback, unregisterRefreshCallback]);
 
   // No need for local IPC listeners - they're handled globally in github-store
 
