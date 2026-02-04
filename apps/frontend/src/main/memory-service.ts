@@ -230,6 +230,15 @@ async function executeQuery(
       stderr += data.toString('utf-8');
     });
 
+    // Single timeout mechanism to avoid race condition
+    const timeoutId = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        proc.kill();
+        resolve({ success: false, error: 'Query timed out' });
+      }
+    }, timeout);
+
     proc.on('close', (code) => {
       if (resolved) return;
       resolved = true;
@@ -266,14 +275,6 @@ async function executeQuery(
       clearTimeout(timeoutId);
       resolve({ success: false, error: err.message });
     });
-
-    // Handle timeout
-    const timeoutId = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      proc.kill();
-      resolve({ success: false, error: 'Query timed out' });
-    }, timeout);
   });
 }
 
