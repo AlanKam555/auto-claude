@@ -232,13 +232,14 @@ async function executeQuery(
 
     proc.on('close', (code) => {
       if (resolved) return;
+      resolved = true;
+      clearTimeout(timeoutId);
 
       // The Python script outputs JSON to stdout (even for errors)
       // Always try to parse stdout first to get the actual error message
       if (stdout) {
         try {
           const result = JSON.parse(stdout);
-          resolved = true;
           resolve(result);
           return;
         } catch {
@@ -246,11 +247,9 @@ async function executeQuery(
           if (code !== 0) {
             const errorMsg = stderr || stdout || `Process exited with code ${code}`;
             console.error('[MemoryService] Python error:', errorMsg);
-            resolved = true;
             resolve({ success: false, error: errorMsg });
             return;
           }
-          resolved = true;
           resolve({ success: false, error: `Invalid JSON response: ${stdout}` });
           return;
         }
@@ -258,18 +257,18 @@ async function executeQuery(
       // No stdout - use stderr or generic error
       const errorMsg = stderr || `Process exited with code ${code}`;
       console.error('[MemoryService] Python error (no stdout):', errorMsg);
-      resolved = true;
       resolve({ success: false, error: errorMsg });
     });
 
     proc.on('error', (err) => {
       if (resolved) return;
       resolved = true;
+      clearTimeout(timeoutId);
       resolve({ success: false, error: err.message });
     });
 
     // Handle timeout
-    setTimeout(() => {
+    const timeoutId = setTimeout(() => {
       if (resolved) return;
       resolved = true;
       proc.kill();
