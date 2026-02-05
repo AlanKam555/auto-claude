@@ -492,7 +492,7 @@ class TestHandleBuildCommand:
         ) as mock_run_agent, patch(
             "qa_loop.should_run_qa", return_value=False
         ), patch(
-            "cli.build_commands.get_base_branch_from_metadata",
+            "prompts_pkg.prompts.get_base_branch_from_metadata",
             return_value="develop",
         ), patch(
             "cli.build_commands.WorkspaceMode"
