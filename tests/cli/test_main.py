@@ -874,6 +874,7 @@ class TestMainNormalBuildFlow:
 class TestRunCliSentryContext:
     """Test Sentry context setting in _run_cli."""
 
+    @pytest.mark.skipif(platform.system() == "Windows", reason="Path separators differ on Windows")
     def test_sentry_context_set_on_spec_found(self):
         """Test that Sentry context is set when spec is found."""
         from cli.main import main

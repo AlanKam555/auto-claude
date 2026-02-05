@@ -157,7 +157,7 @@ class TestGetChangedFilesFromGit:
             ],
         ):
             result = _get_changed_files_from_git(worktree_path, "main")
-            assert result == ["file1.py", "file2"]
+            assert result == ["file1.py", "file2.py"]
 
     def test_get_changed_files_both_fail(self, tmp_path):
         """Test when both merge-base and direct diff fail."""
