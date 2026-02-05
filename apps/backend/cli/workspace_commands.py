@@ -817,7 +817,7 @@ def _check_git_merge_conflicts(
                     import re
 
                     match = re.search(
-                        r"(?:Merge conflict in|CONFLICT.*?:)\s*(.+?)(?:\s*$|\s+\()",
+                        r"Merge conflict in\s+(.+?)\s*$",
                         line,
                     )
                     if match:
