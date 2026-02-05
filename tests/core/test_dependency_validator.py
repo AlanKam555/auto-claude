@@ -96,7 +96,7 @@ class TestWindowsPywin32Error:
             # Assert - check message content
             message = str(exc_info.value)
             assert "pywin32" in message
-            assert "required Windows dependency" in message.lower()
+            assert "required windows dependency" in message.lower()
             assert "MCP library" in message
             assert "win32api" in message
             assert sys.executable in message

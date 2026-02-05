@@ -27,7 +27,8 @@ class TestPatternDiscovererInit:
         """Test initialization with absolute path"""
         project_dir = Path("/tmp/test_project")
         discoverer = PatternDiscoverer(project_dir)
-        assert discoverer.project_dir == project_dir
+        # On macOS, /tmp is a symlink to /private/tmp, so compare resolved paths
+        assert discoverer.project_dir == project_dir.resolve()
 
 
 class TestDiscoverPatternsBasic:

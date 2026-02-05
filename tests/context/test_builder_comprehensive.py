@@ -377,7 +377,8 @@ class TestBuildContext:
                             # Should resolve to absolute path
                             called_path = mock_search.call_args[0][0]
                             assert called_path.is_absolute()
-                            assert "services/api" in str(called_path)
+                            # Check path components work on all platforms
+                            assert "services" in called_path.parts and "api" in called_path.parts
 
     def test_build_context_absolute_service_path(self, tmp_path):
         """Test that absolute service paths are used as-is"""
