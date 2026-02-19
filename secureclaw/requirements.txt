@@ -1,0 +1,18 @@
+# SecureClaw Dependencies
+# Python 3.11+ required
+
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+
+# AI
+anthropic>=0.42.0
+
+# HTTP client (for WhatsApp API calls)
+httpx>=0.28.0
+
+# Encryption
+cryptography>=44.0.0
+
+# Environment variables
+python-dotenv>=1.0.0
