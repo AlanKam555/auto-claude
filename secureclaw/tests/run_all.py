@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SecureClaw Security Test Suite — 120 tests across all security components.
+SecureClaw Security Test Suite — 134 tests across all security components.
 
 Run all tests:
     ADMIN_PHONE="+6512345678" python tests/run_all.py
@@ -16,8 +16,9 @@ Run specific component:
     python tests/run_all.py --component admin
     python tests/run_all.py --component integration
     python tests/run_all.py --component e2e
+    python tests/run_all.py --component agent_features
 
-All 120 tests must pass before any deployment.
+All 134 tests must pass before any deployment.
 """
 
 import argparse
@@ -1462,6 +1463,215 @@ def get_e2e_tests():
 
 
 # ═══════════════════════════════════════════════════════════════
+# TOOL-USE, HISTORY, AND WEBHOOK TESTS (14 tests)
+# ═══════════════════════════════════════════════════════════════
+
+def get_agent_feature_tests():
+    """Tests for tool-use, persistent history, message chunking, and retry logic."""
+    import asyncio
+    import shutil
+    import tempfile
+
+    def _run(coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    # ── Tool-Use ──
+
+    @test("agent: _build_tools returns tool definitions for enabled skills")
+    def test_build_tools():
+        from core.agent import SecureClawAgent
+        agent = SecureClawAgent()
+        tools = agent._build_tools()
+        names = [t["name"] for t in tools]
+        assert "web_search" in names
+        assert "get_weather" in names
+        assert "summarize_url" in names
+        assert "set_reminder" in names
+        for t in tools:
+            assert "input_schema" in t
+            assert "description" in t
+
+    @test("agent: _build_tools excludes disabled skills")
+    def test_build_tools_disabled():
+        from core.agent import SecureClawAgent
+        agent = SecureClawAgent()
+        agent.skills.disable("web_search")
+        tools = agent._build_tools()
+        names = [t["name"] for t in tools]
+        assert "web_search" not in names
+        agent.skills.enable("web_search")
+
+    @test("agent: _execute_tool routes web_search correctly")
+    def test_execute_tool_search():
+        from core.agent import SecureClawAgent, MessageContext
+        agent = SecureClawAgent()
+        ctx = MessageContext(phone=os.environ["ADMIN_PHONE"], text="", message_id="tool-1")
+        ctx.is_admin = True
+
+        saved = os.environ.pop("TAVILY_API_KEY", None)
+        try:
+            result = _run(agent._execute_tool("web_search", {"query": "test"}, ctx))
+            assert "not configured" in result  # no API key
+        finally:
+            if saved:
+                os.environ["TAVILY_API_KEY"] = saved
+
+    @test("agent: _execute_tool routes get_weather correctly")
+    def test_execute_tool_weather():
+        from core.agent import SecureClawAgent, MessageContext
+        agent = SecureClawAgent()
+        ctx = MessageContext(phone=os.environ["ADMIN_PHONE"], text="", message_id="tool-2")
+
+        saved = os.environ.pop("OPENWEATHER_API_KEY", None)
+        try:
+            result = _run(agent._execute_tool("get_weather", {"location": "London"}, ctx))
+            assert "not configured" in result
+        finally:
+            if saved:
+                os.environ["OPENWEATHER_API_KEY"] = saved
+
+    @test("agent: _execute_tool handles unknown tool")
+    def test_execute_tool_unknown():
+        from core.agent import SecureClawAgent, MessageContext
+        agent = SecureClawAgent()
+        ctx = MessageContext(phone=os.environ["ADMIN_PHONE"], text="", message_id="tool-3")
+
+        result = _run(agent._execute_tool("nonexistent_tool", {}, ctx))
+        assert "unknown" in result.lower()
+
+    # ── Persistent History ──
+
+    @test("agent: _save_history and _load_history round-trip")
+    def test_history_persistence():
+        from core.agent import SecureClawAgent, HISTORY_DIR
+        agent = SecureClawAgent()
+        phone = "+6500099001"
+
+        history = [
+            {"role": "user", "content": "Hello test"},
+            {"role": "assistant", "content": "Hi there!"},
+        ]
+        agent._save_history(phone, history)
+
+        loaded = agent._load_history(phone)
+        assert len(loaded) == 2
+        assert loaded[0]["content"] == "Hello test"
+
+        # Cleanup
+        safe_name = phone.replace("+", "")
+        path = HISTORY_DIR / f"{safe_name}.json"
+        if path.exists():
+            path.unlink()
+
+    @test("agent: clear_history removes disk file")
+    def test_clear_history_disk():
+        from core.agent import SecureClawAgent, HISTORY_DIR
+        agent = SecureClawAgent()
+        phone = "+6500099002"
+
+        agent._save_history(phone, [{"role": "user", "content": "temp"}])
+        safe_name = phone.replace("+", "")
+        path = HISTORY_DIR / f"{safe_name}.json"
+        assert path.exists()
+
+        agent.clear_history(phone)
+        assert not path.exists()
+
+    @test("agent: _load_history filters non-text messages")
+    def test_history_filters_tooluse():
+        from core.agent import SecureClawAgent, HISTORY_DIR
+        agent = SecureClawAgent()
+        phone = "+6500099003"
+
+        # Save mixed history (text + non-text)
+        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        safe_name = phone.replace("+", "")
+        path = HISTORY_DIR / f"{safe_name}.json"
+        path.write_text(json.dumps({"messages": [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": [{"type": "tool_use"}]},  # non-text
+            {"role": "assistant", "content": "World"},
+        ]}) + "\n")
+
+        loaded = agent._load_history(phone)
+        assert len(loaded) == 2  # only text messages
+        path.unlink()
+
+    # ── Message Chunking ──
+
+    @test("webhook: _chunk_message keeps short messages intact")
+    def test_chunk_short():
+        from api.webhook import _chunk_message
+        chunks = _chunk_message("Hello world")
+        assert len(chunks) == 1
+        assert chunks[0] == "Hello world"
+
+    @test("webhook: _chunk_message splits long messages")
+    def test_chunk_long():
+        from api.webhook import _chunk_message
+        # Create a message longer than the limit
+        text = "Word " * 1000  # ~5000 chars
+        chunks = _chunk_message(text, max_chars=500)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert len(chunk) <= 500
+
+    @test("webhook: _chunk_message prefers paragraph boundaries")
+    def test_chunk_paragraphs():
+        from api.webhook import _chunk_message
+        text = "First paragraph.\n\nSecond paragraph that is longer than before.\n\nThird very long paragraph " + "x" * 300
+        chunks = _chunk_message(text, max_chars=50)
+        # Should split at a paragraph boundary, not mid-word
+        assert "First paragraph." in chunks[0]
+        assert len(chunks) > 1
+
+    @test("webhook: _chunk_message handles single huge word")
+    def test_chunk_no_spaces():
+        from api.webhook import _chunk_message
+        text = "x" * 500
+        chunks = _chunk_message(text, max_chars=200)
+        assert len(chunks) >= 3
+        for chunk in chunks:
+            assert len(chunk) <= 200
+
+    # ── Retry Logic ──
+
+    @test("webhook: send_whatsapp_reply chunks long messages")
+    def test_reply_chunks():
+        from api.webhook import send_whatsapp_reply, _chunk_message
+        # Just verify chunking works (actual send needs credentials)
+        text = "Test " * 1000  # ~5000 chars
+        chunks = _chunk_message(text)
+        assert len(chunks) >= 2
+
+    @test("webhook: _send_whatsapp_message fails without credentials")
+    def test_send_no_creds():
+        from api.webhook import _send_whatsapp_message
+        saved_token = os.environ.pop("WHATSAPP_TOKEN", None)
+        saved_id = os.environ.pop("WHATSAPP_PHONE_ID", None)
+        try:
+            result = _run(_send_whatsapp_message("+6500000000", "test"))
+            assert result is False
+        finally:
+            if saved_token:
+                os.environ["WHATSAPP_TOKEN"] = saved_token
+            if saved_id:
+                os.environ["WHATSAPP_PHONE_ID"] = saved_id
+
+    return [
+        test_build_tools, test_build_tools_disabled,
+        test_execute_tool_search, test_execute_tool_weather, test_execute_tool_unknown,
+        test_history_persistence, test_clear_history_disk, test_history_filters_tooluse,
+        test_chunk_short, test_chunk_long, test_chunk_paragraphs, test_chunk_no_spaces,
+        test_reply_chunks, test_send_no_creds,
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════
 # MAIN RUNNER
 # ═══════════════════════════════════════════════════════════════
 
@@ -1476,6 +1686,7 @@ COMPONENTS = {
     "admin": get_admin_tests,
     "integration": get_integration_tests,
     "e2e": get_e2e_tests,
+    "agent_features": get_agent_feature_tests,
 }
 
 

@@ -410,13 +410,12 @@ class SkillRegistry:
                 body = resp.text
 
             # Extract text from HTML (simple tag stripping)
-            import re as _re
             # Remove script/style blocks
-            body = _re.sub(r"<(script|style)[^>]*>.*?</\1>", "", body, flags=_re.DOTALL | _re.IGNORECASE)
+            body = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", body, flags=re.DOTALL | re.IGNORECASE)
             # Remove HTML tags
-            body = _re.sub(r"<[^>]+>", " ", body)
+            body = re.sub(r"<[^>]+>", " ", body)
             # Collapse whitespace
-            body = _re.sub(r"\s+", " ", body).strip()
+            body = re.sub(r"\s+", " ", body).strip()
 
             if not body:
                 return "Could not extract text content from the URL."

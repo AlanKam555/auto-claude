@@ -153,9 +153,9 @@ async def handle_webhook(request: Request) -> dict:
 
     response = await agent.process_message(ctx)
 
-    # Send response via WhatsApp
+    # Send response via WhatsApp (with chunking for long messages)
     if not response.blocked:
-        await _send_whatsapp_message(phone, response.text)
+        await send_whatsapp_reply(phone, response.text)
 
     logger.info(
         "Processed message from %s***: blocked=%s, skill=%s, time=%.0fms",
@@ -198,9 +198,68 @@ def _extract_message(data: dict) -> Optional[tuple[str, str, str]]:
         return None
 
 
-async def _send_whatsapp_message(phone: str, text: str) -> bool:
+WHATSAPP_MAX_CHARS = 4096
+
+
+def _chunk_message(text: str, max_chars: int = 3800) -> list[str]:
     """
-    Send a text message via WhatsApp Cloud API.
+    Split a long message into WhatsApp-safe chunks.
+    Prefers splitting at paragraph/line boundaries.
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    remaining = text
+
+    while remaining:
+        if len(remaining) <= max_chars:
+            chunks.append(remaining)
+            break
+
+        # Try to split at a paragraph boundary
+        cut = remaining[:max_chars].rfind("\n\n")
+        if cut < max_chars // 2:
+            # Try single newline
+            cut = remaining[:max_chars].rfind("\n")
+        if cut < max_chars // 2:
+            # Try space
+            cut = remaining[:max_chars].rfind(" ")
+        if cut < max_chars // 2:
+            # Hard cut
+            cut = max_chars
+
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+
+    return chunks
+
+
+async def send_whatsapp_reply(phone: str, text: str) -> bool:
+    """
+    Send a reply via WhatsApp, with chunking and retry.
+    Long messages are split into multiple chunks sent sequentially.
+    Returns True if all chunks sent successfully.
+    """
+    chunks = _chunk_message(text)
+    success = True
+
+    for i, chunk in enumerate(chunks):
+        if not await _send_whatsapp_message(phone, chunk):
+            success = False
+            break
+        # Small delay between chunks to preserve ordering
+        if i < len(chunks) - 1:
+            import asyncio
+            await asyncio.sleep(0.15)
+
+    return success
+
+
+async def _send_whatsapp_message(phone: str, text: str, retries: int = 3) -> bool:
+    """
+    Send a single text message via WhatsApp Cloud API.
+    Retries with exponential backoff on transient failures.
     Returns True on success.
     """
     token = os.environ.get("WHATSAPP_TOKEN")
@@ -210,6 +269,7 @@ async def _send_whatsapp_message(phone: str, text: str) -> bool:
         logger.error("WhatsApp credentials not configured")
         return False
 
+    import asyncio
     import httpx
 
     url = f"https://graph.facebook.com/v21.0/{phone_id}/messages"
@@ -221,16 +281,32 @@ async def _send_whatsapp_message(phone: str, text: str) -> bool:
         "messaging_product": "whatsapp",
         "to": phone,
         "type": "text",
-        "text": {"body": text[:4096]},  # WhatsApp limit
+        "text": {"body": text[:WHATSAPP_MAX_CHARS]},
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code == 200:
-                return True
-            logger.error("WhatsApp API error: %s %s", resp.status_code, resp.text)
-            return False
-    except Exception as e:
-        logger.error("Failed to send WhatsApp message: %s", e)
-        return False
+    for attempt in range(retries):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    return True
+                # Don't retry on client errors (4xx) except 429 (rate limit)
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    logger.error("WhatsApp API error (no retry): %s %s", resp.status_code, resp.text)
+                    return False
+                logger.warning(
+                    "WhatsApp API error (attempt %d/%d): %s",
+                    attempt + 1, retries, resp.status_code,
+                )
+        except Exception as e:
+            logger.warning(
+                "WhatsApp send failed (attempt %d/%d): %s",
+                attempt + 1, retries, e,
+            )
+
+        if attempt < retries - 1:
+            backoff = 2 ** attempt  # 1s, 2s
+            await asyncio.sleep(backoff)
+
+    logger.error("WhatsApp message delivery failed after %d attempts to %s***", retries, phone[:6])
+    return False

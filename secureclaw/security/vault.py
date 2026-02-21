@@ -15,6 +15,8 @@ import json
 import logging
 import os
 import secrets
+import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -27,9 +29,9 @@ VAULT_KEY_FILE = CONFIG_DIR / "vault.key"
 # Try to import Fernet; fall back gracefully
 HAS_FERNET = False
 
+
 def _check_cryptography_available() -> bool:
     """Check if cryptography's Rust bindings work before importing."""
-    import subprocess
     try:
         result = subprocess.run(
             [sys.executable, "-c", "from cryptography.fernet import Fernet"],
@@ -39,7 +41,7 @@ def _check_cryptography_available() -> bool:
     except Exception:
         return False
 
-import sys
+
 if _check_cryptography_available():
     try:
         from cryptography.fernet import Fernet, InvalidToken
