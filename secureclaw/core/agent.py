@@ -87,6 +87,8 @@ You are helpful, accurate, and security-conscious."""
         self.skills = SkillRegistry(
             sandbox=self.sandbox,
             clear_history_fn=self.clear_history,
+            auth_manager=self.auth,
+            vault_manager=self.vault,
         )
 
         # Conversation history per phone (in-memory, bounded)

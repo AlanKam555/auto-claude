@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SecureClaw Security Test Suite — 108 tests across all security components.
+SecureClaw Security Test Suite — 120 tests across all security components.
 
 Run all tests:
     ADMIN_PHONE="+6512345678" python tests/run_all.py
@@ -13,10 +13,11 @@ Run specific component:
     python tests/run_all.py --component webhook
     python tests/run_all.py --component skills
     python tests/run_all.py --component skill_handlers
+    python tests/run_all.py --component admin
     python tests/run_all.py --component integration
     python tests/run_all.py --component e2e
 
-All 108 tests must pass before any deployment.
+All 120 tests must pass before any deployment.
 """
 
 import argparse
@@ -1045,6 +1046,199 @@ def get_skill_handler_tests():
 
 
 # ═══════════════════════════════════════════════════════════════
+# ADMIN SKILL TESTS (12 tests)
+# ═══════════════════════════════════════════════════════════════
+
+def get_admin_tests():
+    """Tests for admin skill handlers (/whitelist, /vault, /reminders)."""
+    import asyncio
+    from security.auth import AuthManager
+    from security.vault import VaultManager
+    from skills.registry import SkillRegistry, SkillMatch, _reminders
+
+    def _run(coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    class _FakeCtx:
+        def __init__(self, phone="+6500000000", is_admin=True):
+            self.phone = phone
+            self.is_admin = is_admin
+
+    # ── Whitelist Commands ──
+
+    @test("admin: /whitelist lists numbers")
+    def test_whitelist_list():
+        auth = AuthManager()
+        reg = SkillRegistry(auth_manager=auth)
+        match = SkillMatch(skill_name="whitelist", args="", raw_text="/whitelist")
+        ctx = _FakeCtx()
+
+        result = _run(reg.execute(match, ctx))
+        # At minimum, the admin phone should be listed
+        assert "Whitelisted" in result or "empty" in result.lower()
+
+    @test("admin: /whitelist add and remove number")
+    def test_whitelist_add_remove():
+        auth = AuthManager()
+        reg = SkillRegistry(auth_manager=auth)
+        ctx = _FakeCtx()
+
+        # Add
+        match = SkillMatch(skill_name="whitelist", args="add +6500001234", raw_text="/whitelist add +6500001234")
+        result = _run(reg.execute(match, ctx))
+        assert "added" in result.lower()
+        assert auth.is_allowed("+6500001234")
+
+        # Remove
+        match = SkillMatch(skill_name="whitelist", args="remove +6500001234", raw_text="/whitelist remove +6500001234")
+        result = _run(reg.execute(match, ctx))
+        assert "removed" in result.lower()
+        assert not auth.is_allowed("+6500001234")
+
+    @test("admin: /whitelist add with role")
+    def test_whitelist_add_role():
+        auth = AuthManager()
+        reg = SkillRegistry(auth_manager=auth)
+        ctx = _FakeCtx()
+
+        match = SkillMatch(skill_name="whitelist", args="add +6500005678 power_user", raw_text="/whitelist add +6500005678 power_user")
+        result = _run(reg.execute(match, ctx))
+        assert "power_user" in result
+        assert auth.get_role("+6500005678") == "power_user"
+        auth.remove_number("+6500005678")
+
+    @test("admin: /whitelist add with invalid role")
+    def test_whitelist_invalid_role():
+        auth = AuthManager()
+        reg = SkillRegistry(auth_manager=auth)
+        ctx = _FakeCtx()
+
+        match = SkillMatch(skill_name="whitelist", args="add +6500005678 superadmin", raw_text="/whitelist add +6500005678 superadmin")
+        result = _run(reg.execute(match, ctx))
+        assert "invalid role" in result.lower()
+
+    @test("admin: /whitelist role changes role")
+    def test_whitelist_change_role():
+        auth = AuthManager()
+        reg = SkillRegistry(auth_manager=auth)
+        ctx = _FakeCtx()
+
+        auth.add_number("+6500009876", role="user")
+        match = SkillMatch(skill_name="whitelist", args="role +6500009876 power_user", raw_text="/whitelist role +6500009876 power_user")
+        result = _run(reg.execute(match, ctx))
+        assert "updated" in result.lower()
+        assert auth.get_role("+6500009876") == "power_user"
+        auth.remove_number("+6500009876")
+
+    @test("admin: /whitelist blocked for non-admin")
+    def test_whitelist_blocked():
+        auth = AuthManager()
+        reg = SkillRegistry(auth_manager=auth)
+        ctx = _FakeCtx(is_admin=False)
+
+        match = SkillMatch(skill_name="whitelist", args="", raw_text="/whitelist")
+        result = _run(reg.execute(match, ctx))
+        assert "admin" in result.lower()
+
+    # ── Vault Commands ──
+
+    @test("admin: /vault list shows keys")
+    def test_vault_list():
+        vault = VaultManager()
+        vault.set("test_admin_key", "secret_value")
+        reg = SkillRegistry(vault_manager=vault)
+        ctx = _FakeCtx()
+
+        match = SkillMatch(skill_name="vault", args="", raw_text="/vault")
+        result = _run(reg.execute(match, ctx))
+        assert "test_admin_key" in result
+        vault.delete("test_admin_key")
+
+    @test("admin: /vault set and get")
+    def test_vault_set_get():
+        vault = VaultManager()
+        reg = SkillRegistry(vault_manager=vault)
+        ctx = _FakeCtx()
+
+        # Set
+        match = SkillMatch(skill_name="vault", args="set MY_API_KEY abc123xyz", raw_text="/vault set MY_API_KEY abc123xyz")
+        result = _run(reg.execute(match, ctx))
+        assert "stored" in result.lower()
+
+        # Get (should be masked)
+        match = SkillMatch(skill_name="vault", args="get MY_API_KEY", raw_text="/vault get MY_API_KEY")
+        result = _run(reg.execute(match, ctx))
+        assert "abc1" in result  # first 4 chars
+        assert "****" in result  # masked
+        assert "abc123xyz" not in result  # full value not shown
+
+        vault.delete("MY_API_KEY")
+
+    @test("admin: /vault delete")
+    def test_vault_delete():
+        vault = VaultManager()
+        vault.set("delete_me", "temporary")
+        reg = SkillRegistry(vault_manager=vault)
+        ctx = _FakeCtx()
+
+        match = SkillMatch(skill_name="vault", args="delete delete_me", raw_text="/vault delete delete_me")
+        result = _run(reg.execute(match, ctx))
+        assert "deleted" in result.lower()
+        assert not vault.has("delete_me")
+
+    @test("admin: /vault get nonexistent key")
+    def test_vault_get_missing():
+        vault = VaultManager()
+        reg = SkillRegistry(vault_manager=vault)
+        ctx = _FakeCtx()
+
+        match = SkillMatch(skill_name="vault", args="get no_such_key", raw_text="/vault get no_such_key")
+        result = _run(reg.execute(match, ctx))
+        assert "not found" in result.lower()
+
+    # ── Reminders List ──
+
+    @test("admin: /reminders lists pending reminders")
+    def test_reminders_list():
+        reg = SkillRegistry()
+        phone = "+6500007777"
+        ctx = _FakeCtx(phone=phone)
+
+        # Set a reminder first
+        set_match = SkillMatch(skill_name="set_reminder", args="Test list", raw_text="/remind Test list")
+        _run(reg.execute(set_match, ctx))
+
+        # List reminders
+        list_match = SkillMatch(skill_name="reminders", args="", raw_text="/reminders")
+        result = _run(reg.execute(list_match, ctx))
+        assert "Test list" in result
+        assert "pending" in result.lower()
+
+    @test("admin: /reminders empty when none set")
+    def test_reminders_empty():
+        reg = SkillRegistry()
+        ctx = _FakeCtx(phone="+6500008888")
+
+        # Clear any existing reminders for this phone
+        _reminders.pop("+6500008888", None)
+
+        match = SkillMatch(skill_name="reminders", args="", raw_text="/reminders")
+        result = _run(reg.execute(match, ctx))
+        assert "no pending" in result.lower()
+
+    return [
+        test_whitelist_list, test_whitelist_add_remove, test_whitelist_add_role,
+        test_whitelist_invalid_role, test_whitelist_change_role, test_whitelist_blocked,
+        test_vault_list, test_vault_set_get, test_vault_delete, test_vault_get_missing,
+        test_reminders_list, test_reminders_empty,
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════
 # INTEGRATION TESTS (3 tests)
 # ═══════════════════════════════════════════════════════════════
 
@@ -1279,6 +1473,7 @@ COMPONENTS = {
     "webhook": get_webhook_tests,
     "skills": get_skills_tests,
     "skill_handlers": get_skill_handler_tests,
+    "admin": get_admin_tests,
     "integration": get_integration_tests,
     "e2e": get_e2e_tests,
 }

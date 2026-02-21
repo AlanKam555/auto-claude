@@ -13,6 +13,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Optional, Awaitable, Any
 
 import httpx
@@ -21,9 +22,34 @@ from security.sandbox import SandboxManager, SandboxConfig
 
 logger = logging.getLogger(__name__)
 
-# In-memory reminder storage (per-phone, keyed by reminder ID)
+# ── Persistent reminder storage ──
+_REMINDERS_FILE = Path(__file__).parent.parent / "config" / "reminders.json"
 _reminders: dict[str, list[dict]] = {}
 _reminder_counter: int = 0
+
+
+def _load_reminders() -> None:
+    """Load reminders from disk on startup."""
+    global _reminders, _reminder_counter
+    if _REMINDERS_FILE.exists():
+        try:
+            data = json.loads(_REMINDERS_FILE.read_text())
+            _reminders = data.get("reminders", {})
+            _reminder_counter = data.get("counter", 0)
+            logger.info("Loaded %d reminder entries from disk", sum(len(v) for v in _reminders.values()))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error("Failed to load reminders: %s", e)
+
+
+def _save_reminders() -> None:
+    """Persist reminders to disk."""
+    _REMINDERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = {"reminders": _reminders, "counter": _reminder_counter}
+    _REMINDERS_FILE.write_text(json.dumps(data, indent=2) + "\n")
+
+
+# Load on module import
+_load_reminders()
 
 
 @dataclass
@@ -66,10 +92,14 @@ class SkillRegistry:
         self,
         sandbox: Optional[SandboxManager] = None,
         clear_history_fn: Optional[Callable[[str], None]] = None,
+        auth_manager: Optional[Any] = None,
+        vault_manager: Optional[Any] = None,
     ) -> None:
         self._skills: dict[str, Skill] = {}
         self._sandbox = sandbox or SandboxManager()
         self._clear_history_fn = clear_history_fn
+        self._auth = auth_manager
+        self._vault = vault_manager
         self._register_builtins()
 
     def _register_builtins(self) -> None:
@@ -92,6 +122,31 @@ class SkillRegistry:
             description="Clear conversation history",
             pattern=re.compile(r"^/clear$", re.IGNORECASE),
             handler=self._handle_clear,
+        ))
+
+        # ── Admin skills (admin_only) ──
+
+        self.register(Skill(
+            name="whitelist",
+            description="Manage phone whitelist (admin)",
+            pattern=re.compile(r"^/whitelist(?:\s+(.*))?$", re.IGNORECASE),
+            handler=self._handle_whitelist,
+            admin_only=True,
+        ))
+
+        self.register(Skill(
+            name="vault",
+            description="Manage secrets vault (admin)",
+            pattern=re.compile(r"^/vault(?:\s+(.*))?$", re.IGNORECASE),
+            handler=self._handle_vault,
+            admin_only=True,
+        ))
+
+        self.register(Skill(
+            name="reminders",
+            description="View pending reminders",
+            pattern=re.compile(r"^/reminders$", re.IGNORECASE),
+            handler=self._handle_list_reminders,
         ))
 
         # ── 4 Built-in content skills (run in Docker) ──
@@ -423,6 +478,7 @@ class SkillRegistry:
         if phone not in _reminders:
             _reminders[phone] = []
         _reminders[phone].append(reminder)
+        _save_reminders()
 
         # Schedule the reminder as a background task
         asyncio.ensure_future(self._fire_reminder(phone, reminder_id, delay_minutes))
@@ -440,6 +496,7 @@ class SkillRegistry:
         for r in reminders:
             if r["id"] == reminder_id and not r["fired"]:
                 r["fired"] = True
+                _save_reminders()
                 logger.info(
                     "Reminder #%d fired for %s: %s",
                     reminder_id, phone[:6] + "***", r["message"],
@@ -501,3 +558,138 @@ class SkillRegistry:
         except Exception as e:
             logger.error("Weather lookup failed: %s", e)
             return "Failed to get weather. Please try again later."
+
+    # === Admin Handlers ===
+
+    async def _handle_whitelist(self, match: SkillMatch, ctx) -> str:
+        """Manage the phone number whitelist.
+
+        /whitelist              — list all numbers
+        /whitelist add +65...   — add a number (default role: user)
+        /whitelist add +65... power_user — add with role
+        /whitelist remove +65...— remove a number
+        /whitelist role +65... admin — change role
+        """
+        if not self._auth:
+            return "Whitelist management is not available."
+
+        args = (match.args or "").strip()
+
+        if not args or args.lower() == "list":
+            numbers = self._auth.list_numbers()
+            if not numbers:
+                return "Whitelist is empty."
+            lines = ["*Whitelisted Numbers:*\n"]
+            for entry in numbers:
+                lines.append(f"  {entry['phone']} — {entry['role']}")
+            return "\n".join(lines)
+
+        parts = args.split()
+        action = parts[0].lower()
+
+        if action == "add" and len(parts) >= 2:
+            phone = parts[1]
+            role = parts[2] if len(parts) >= 3 else "user"
+            valid_roles = ["user", "power_user", "admin"]
+            if role not in valid_roles:
+                return f"Invalid role: {role}. Valid roles: {', '.join(valid_roles)}"
+            self._auth.add_number(phone, role=role)
+            return f"Added {phone} with role '{role}'."
+
+        if action == "remove" and len(parts) >= 2:
+            phone = parts[1]
+            self._auth.remove_number(phone)
+            return f"Removed {phone} from whitelist."
+
+        if action == "role" and len(parts) >= 3:
+            phone = parts[1]
+            role = parts[2]
+            try:
+                self._auth.set_role(phone, role)
+                return f"Updated {phone} to role '{role}'."
+            except ValueError as e:
+                return str(e)
+
+        return (
+            "*Whitelist commands:*\n"
+            "  /whitelist — list all numbers\n"
+            "  /whitelist add +65... [role] — add number\n"
+            "  /whitelist remove +65... — remove number\n"
+            "  /whitelist role +65... admin — change role\n"
+            "\nRoles: user, power_user, admin"
+        )
+
+    async def _handle_vault(self, match: SkillMatch, ctx) -> str:
+        """Manage the encrypted secrets vault.
+
+        /vault                  — list all keys
+        /vault set KEY value    — store a secret
+        /vault get KEY          — retrieve a secret (masked)
+        /vault delete KEY       — delete a secret
+        """
+        if not self._vault:
+            return "Vault management is not available."
+
+        args = (match.args or "").strip()
+
+        if not args or args.lower() == "list":
+            keys = self._vault.list_keys()
+            if not keys:
+                return "Vault is empty."
+            lines = ["*Vault Keys:*\n"]
+            for key in keys:
+                lines.append(f"  {key}")
+            return "\n".join(lines)
+
+        parts = args.split(maxsplit=2)
+        action = parts[0].lower()
+
+        if action == "set" and len(parts) >= 3:
+            key = parts[1]
+            value = parts[2]
+            self._vault.set(key, value)
+            return f"Stored secret: {key}"
+
+        if action == "get" and len(parts) >= 2:
+            key = parts[1]
+            value = self._vault.get(key)
+            if value is None:
+                return f"Key not found: {key}"
+            # Mask the value — show first 4 chars only
+            masked = value[:4] + "****" if len(value) > 4 else "****"
+            return f"*{key}* = {masked}"
+
+        if action == "delete" and len(parts) >= 2:
+            key = parts[1]
+            if self._vault.delete(key):
+                return f"Deleted secret: {key}"
+            return f"Key not found: {key}"
+
+        return (
+            "*Vault commands:*\n"
+            "  /vault — list all keys\n"
+            "  /vault set KEY value — store secret\n"
+            "  /vault get KEY — view secret (masked)\n"
+            "  /vault delete KEY — delete secret"
+        )
+
+    async def _handle_list_reminders(self, match: SkillMatch, ctx) -> str:
+        """List pending reminders for the current user."""
+        phone = getattr(ctx, "phone", None)
+        if not phone:
+            return "Unable to identify your phone number."
+
+        user_reminders = _reminders.get(phone, [])
+        pending = [r for r in user_reminders if not r.get("fired")]
+
+        if not pending:
+            return "You have no pending reminders."
+
+        lines = ["*Your Pending Reminders:*\n"]
+        for r in pending:
+            lines.append(
+                f"  #{r['id']} — _{r['message']}_\n"
+                f"    Set: {r['created_at'][:16]} | "
+                f"Fires in: {r['delay_minutes']} min"
+            )
+        return "\n".join(lines)
