@@ -28,7 +28,7 @@ SecureClaw is the security-first, official-API alternative.
 3. **Sandboxed execution** — Skills ALWAYS run in Docker containers. No exceptions.
 4. **Least privilege secrets** — Skills only receive the secrets they explicitly declare in their manifest.
 5. **Prompt injection defense** — All external content (emails, documents, web pages) must be wrapped as untrusted before passing to the LLM.
-6. **Test before deploy** — Run `python tests/run_all.py` and all 78 tests must pass before any deployment.
+6. **Test before deploy** — Run `python tests/run_all.py` and all 98 tests must pass before any deployment.
 
 ## Tech Stack
 
@@ -71,10 +71,14 @@ secureclaw/
 │
 ├── skills/
 │   ├── __init__.py
-│   └── registry.py            ← Skill definitions + built-in skills
+│   ├── registry.py            ← Skill definitions + handler implementations
+│   └── docker/                ← Dockerfiles for sandboxed skill execution
+│       ├── web_search/        ← Tavily API search container
+│       ├── summarize_url/     ← URL fetch & extract container
+│       └── weather/           ← OpenWeather API container
 │
 ├── tests/
-│   └── run_all.py             ← 78-test security suite (run before every deploy)
+│   └── run_all.py             ← 98-test security suite (run before every deploy)
 │
 └── config/                    ← Created at runtime, NEVER commit this folder
     ├── whitelist.json          ← Authorized phone numbers (auto-generated)
@@ -131,7 +135,7 @@ ngrok http 8000
 4. Create the Docker image for the skill (in `skills/docker/<skill_name>/`)
 5. Register it in `SkillRegistry._register_builtins()` or via `registry.register(skill)`
 6. Add a test in `tests/run_all.py` under `test_sandbox_config()`
-7. Run the full test suite — all 78 tests must pass
+7. Run the full test suite — all 98 tests must pass
 
 ## How to Add a New Injection Pattern
 
@@ -146,22 +150,24 @@ When discovering a new prompt injection attack pattern:
 ## Current Status
 
 - [x] Core architecture scaffolded
-- [x] Security test suite — 78 tests, all passing
+- [x] Security test suite — 98 tests, all passing
 - [x] Prompt injection filter — 25+ attack patterns
 - [x] Authentication & RBAC system
 - [x] Encrypted secrets vault
 - [x] Docker sandbox configuration
 - [x] Webhook handler structure
-- [x] 4 built-in skills defined (web_search, summarize_url, set_reminder, get_weather)
+- [x] 4 built-in skills fully implemented (web_search, summarize_url, set_reminder, get_weather)
+- [x] Web search skill — Tavily API integration with error handling
+- [x] URL summarization skill — HTML fetching, tag stripping, text extraction
+- [x] Reminder skill — async scheduling with delay parsing (e.g., "in 30 minutes")
+- [x] Weather skill — OpenWeather API with formatted display
+- [x] Docker images for each built-in skill (skills/docker/)
+- [x] 20 handler-level tests with mocked HTTP responses
+- [x] Timestamp validation for webhook replay attack prevention
+- [x] Rate limiting per phone number
 - [ ] Meta developer app setup & credentials
-- [ ] Docker images for each built-in skill
 - [ ] ngrok / production webhook configured
 - [ ] First end-to-end message test
-- [ ] Web search skill implementation (Tavily)
-- [ ] Weather skill implementation (OpenWeather)
-- [ ] Reminder skill implementation (scheduler)
-- [ ] Timestamp validation for webhook replay attack prevention
-- [ ] Rate limiting per phone number
 - [ ] Meta BSP application submitted
 
 ## Partnership Context

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SecureClaw Security Test Suite — 78 tests across all security components.
+SecureClaw Security Test Suite — 98 tests across all security components.
 
 Run all tests:
     ADMIN_PHONE="+6512345678" python tests/run_all.py
@@ -12,9 +12,10 @@ Run specific component:
     python tests/run_all.py --component vault
     python tests/run_all.py --component webhook
     python tests/run_all.py --component skills
+    python tests/run_all.py --component skill_handlers
     python tests/run_all.py --component integration
 
-All 78 tests must pass before any deployment.
+All 98 tests must pass before any deployment.
 """
 
 import argparse
@@ -691,6 +692,358 @@ def get_skills_tests():
 
 
 # ═══════════════════════════════════════════════════════════════
+# SKILL HANDLER TESTS (20 tests)
+# ═══════════════════════════════════════════════════════════════
+
+def get_skill_handler_tests():
+    """Tests for the actual skill handler implementations (mocked HTTP)."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from skills.registry import SkillRegistry, SkillMatch, _reminders
+
+    def _run(coro):
+        """Helper to run an async function synchronously."""
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    class _FakeCtx:
+        """Minimal context object for skill handlers."""
+        def __init__(self, phone="+6500000000", is_admin=False):
+            self.phone = phone
+            self.is_admin = is_admin
+
+    # ── Web Search Handlers ──
+
+    @test("handler: web_search returns results on success")
+    def test_search_success():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="web_search", args="Python tutorial", raw_text="/search Python tutorial")
+        ctx = _FakeCtx()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "answer": "Python is a programming language.",
+            "results": [
+                {"title": "Python Docs", "url": "https://python.org", "content": "Official Python documentation."},
+                {"title": "Learn Python", "url": "https://learn.python.org", "content": "Free Python tutorials."},
+            ],
+        }
+
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "test-key"}):
+            with patch("httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=False)
+                mock_client.post = AsyncMock(return_value=mock_response)
+                mock_client_cls.return_value = mock_client
+
+                result = _run(reg.execute(match, ctx))
+
+        assert "Python tutorial" in result
+        assert "Python Docs" in result
+
+    @test("handler: web_search with no API key")
+    def test_search_no_key():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="web_search", args="test", raw_text="/search test")
+        ctx = _FakeCtx()
+
+        saved = os.environ.pop("TAVILY_API_KEY", None)
+        try:
+            result = _run(reg.execute(match, ctx))
+            assert "not configured" in result
+        finally:
+            if saved:
+                os.environ["TAVILY_API_KEY"] = saved
+
+    @test("handler: web_search with empty query")
+    def test_search_empty():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="web_search", args="", raw_text="/search")
+        ctx = _FakeCtx()
+
+        result = _run(reg.execute(match, ctx))
+        assert "provide a search query" in result.lower()
+
+    @test("handler: web_search handles timeout")
+    def test_search_timeout():
+        import httpx as _httpx
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="web_search", args="test query", raw_text="/search test query")
+        ctx = _FakeCtx()
+
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "test-key"}):
+            with patch("httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=False)
+                mock_client.post = AsyncMock(side_effect=_httpx.TimeoutException("timeout"))
+                mock_client_cls.return_value = mock_client
+
+                result = _run(reg.execute(match, ctx))
+
+        assert "timed out" in result.lower()
+
+    # ── URL Summarization Handlers ──
+
+    @test("handler: summarize_url returns content on success")
+    def test_summarize_success():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="summarize_url", args="https://example.com", raw_text="/summarize https://example.com")
+        ctx = _FakeCtx()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {"content-type": "text/html; charset=utf-8"}
+        mock_response.text = "<html><body><h1>Example</h1><p>This is example content for testing.</p></body></html>"
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            result = _run(reg.execute(match, ctx))
+
+        assert "example.com" in result.lower()
+        assert "example content" in result.lower()
+
+    @test("handler: summarize_url rejects non-http URL")
+    def test_summarize_invalid_url():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="summarize_url", args="ftp://bad.com", raw_text="/summarize ftp://bad.com")
+        ctx = _FakeCtx()
+
+        result = _run(reg.execute(match, ctx))
+        assert "invalid url" in result.lower() or "http" in result.lower()
+
+    @test("handler: summarize_url rejects unsupported content type")
+    def test_summarize_binary():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="summarize_url", args="https://example.com/file.pdf", raw_text="/summarize https://example.com/file.pdf")
+        ctx = _FakeCtx()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {"content-type": "application/pdf"}
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            result = _run(reg.execute(match, ctx))
+
+        assert "cannot summarize" in result.lower()
+
+    @test("handler: summarize_url with empty args")
+    def test_summarize_empty():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="summarize_url", args="", raw_text="/summarize")
+        ctx = _FakeCtx()
+
+        result = _run(reg.execute(match, ctx))
+        assert "provide a url" in result.lower()
+
+    # ── Reminder Handlers ──
+
+    @test("handler: set_reminder creates reminder with default delay")
+    def test_reminder_default():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="set_reminder", args="Buy groceries", raw_text="/remind Buy groceries")
+        ctx = _FakeCtx(phone="+6500001111")
+
+        result = _run(reg.execute(match, ctx))
+        assert "reminder set" in result.lower()
+        assert "Buy groceries" in result
+        assert "5 minute" in result  # default delay
+
+    @test("handler: set_reminder parses custom delay")
+    def test_reminder_custom_delay():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="set_reminder", args="Call mom in 30 minutes", raw_text="/remind Call mom in 30 minutes")
+        ctx = _FakeCtx(phone="+6500002222")
+
+        result = _run(reg.execute(match, ctx))
+        assert "reminder set" in result.lower()
+        assert "Call mom" in result
+        assert "30 minute" in result
+
+    @test("handler: set_reminder rejects excessive delay")
+    def test_reminder_max_delay():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="set_reminder", args="Test in 9999 minutes", raw_text="/remind Test in 9999 minutes")
+        ctx = _FakeCtx(phone="+6500003333")
+
+        result = _run(reg.execute(match, ctx))
+        assert "24 hours" in result.lower() or "1440" in result
+
+    @test("handler: set_reminder with empty message")
+    def test_reminder_empty():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="set_reminder", args="", raw_text="/remind")
+        ctx = _FakeCtx()
+
+        result = _run(reg.execute(match, ctx))
+        assert "provide a reminder" in result.lower()
+
+    @test("handler: set_reminder stores reminder in memory")
+    def test_reminder_stored():
+        from skills.registry import _reminders
+        reg = SkillRegistry()
+        phone = "+6500004444"
+        match = SkillMatch(skill_name="set_reminder", args="Test storage", raw_text="/remind Test storage")
+        ctx = _FakeCtx(phone=phone)
+
+        _run(reg.execute(match, ctx))
+        assert phone in _reminders
+        found = any(r["message"] == "Test storage" for r in _reminders[phone])
+        assert found, "Reminder should be stored in memory"
+
+    # ── Weather Handlers ──
+
+    @test("handler: get_weather returns data on success")
+    def test_weather_success():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="get_weather", args="Singapore", raw_text="/weather Singapore")
+        ctx = _FakeCtx()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "name": "Singapore",
+            "sys": {"country": "SG"},
+            "weather": [{"description": "scattered clouds"}],
+            "main": {"temp": 31.5, "feels_like": 35.0, "humidity": 78},
+            "wind": {"speed": 3.2},
+        }
+
+        with patch.dict(os.environ, {"OPENWEATHER_API_KEY": "test-key"}):
+            with patch("httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=False)
+                mock_client.get = AsyncMock(return_value=mock_response)
+                mock_client_cls.return_value = mock_client
+
+                result = _run(reg.execute(match, ctx))
+
+        assert "Singapore" in result
+        assert "31.5" in result
+        assert "scattered clouds" in result.lower()
+
+    @test("handler: get_weather with no API key")
+    def test_weather_no_key():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="get_weather", args="London", raw_text="/weather London")
+        ctx = _FakeCtx()
+
+        saved = os.environ.pop("OPENWEATHER_API_KEY", None)
+        try:
+            result = _run(reg.execute(match, ctx))
+            assert "not configured" in result
+        finally:
+            if saved:
+                os.environ["OPENWEATHER_API_KEY"] = saved
+
+    @test("handler: get_weather with empty location")
+    def test_weather_empty():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="get_weather", args="", raw_text="/weather")
+        ctx = _FakeCtx()
+
+        result = _run(reg.execute(match, ctx))
+        assert "provide a location" in result.lower()
+
+    @test("handler: get_weather handles 404 (unknown location)")
+    def test_weather_not_found():
+        import httpx as _httpx
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="get_weather", args="Xyzabcnotacity", raw_text="/weather Xyzabcnotacity")
+        ctx = _FakeCtx()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+
+        with patch.dict(os.environ, {"OPENWEATHER_API_KEY": "test-key"}):
+            with patch("httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=False)
+                mock_client.get = AsyncMock(
+                    side_effect=_httpx.HTTPStatusError("Not Found", request=MagicMock(), response=mock_response)
+                )
+                mock_client_cls.return_value = mock_client
+
+                result = _run(reg.execute(match, ctx))
+
+        assert "not found" in result.lower()
+
+    @test("handler: get_weather handles timeout")
+    def test_weather_timeout():
+        import httpx as _httpx
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="get_weather", args="London", raw_text="/weather London")
+        ctx = _FakeCtx()
+
+        with patch.dict(os.environ, {"OPENWEATHER_API_KEY": "test-key"}):
+            with patch("httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=False)
+                mock_client.get = AsyncMock(side_effect=_httpx.TimeoutException("timeout"))
+                mock_client_cls.return_value = mock_client
+
+                result = _run(reg.execute(match, ctx))
+
+        assert "timed out" in result.lower()
+
+    # ── Help & Status Handlers ──
+
+    @test("handler: help lists all enabled skills")
+    def test_help_output():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="help", args="", raw_text="/help")
+        ctx = _FakeCtx()
+
+        result = _run(reg.execute(match, ctx))
+        assert "/help" in result
+        assert "/web_search" in result or "web" in result.lower()
+        assert "/weather" in result or "weather" in result.lower()
+
+    @test("handler: status shows service info")
+    def test_status_output():
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="status", args="", raw_text="/status")
+        ctx = _FakeCtx()
+
+        result = _run(reg.execute(match, ctx))
+        assert "running" in result.lower()
+        assert "skills" in result.lower()
+
+    return [
+        test_search_success, test_search_no_key, test_search_empty, test_search_timeout,
+        test_summarize_success, test_summarize_invalid_url, test_summarize_binary, test_summarize_empty,
+        test_reminder_default, test_reminder_custom_delay, test_reminder_max_delay,
+        test_reminder_empty, test_reminder_stored,
+        test_weather_success, test_weather_no_key, test_weather_empty,
+        test_weather_not_found, test_weather_timeout,
+        test_help_output, test_status_output,
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════
 # INTEGRATION TESTS (3 tests)
 # ═══════════════════════════════════════════════════════════════
 
@@ -743,6 +1096,7 @@ COMPONENTS = {
     "vault": get_vault_tests,
     "webhook": get_webhook_tests,
     "skills": get_skills_tests,
+    "skill_handlers": get_skill_handler_tests,
     "integration": get_integration_tests,
 }
 

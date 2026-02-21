@@ -6,14 +6,24 @@ Each skill runs in a Docker sandbox via the SandboxManager.
 Skills declare their required secrets — they only receive what they declare.
 """
 
+import asyncio
+import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable, Optional, Awaitable, Any
+
+import httpx
 
 from security.sandbox import SandboxManager, SandboxConfig
 
 logger = logging.getLogger(__name__)
+
+# In-memory reminder storage (per-phone, keyed by reminder ID)
+_reminders: dict[str, list[dict]] = {}
+_reminder_counter: int = 0
 
 
 @dataclass
@@ -257,17 +267,228 @@ class SkillRegistry:
         return "Conversation history cleared."
 
     async def _handle_web_search(self, match: SkillMatch, ctx) -> str:
-        # TODO: Implement Tavily API integration in Docker sandbox
-        return f"Web search skill not yet implemented. Query: {match.args}"
+        """Search the web via Tavily API and return formatted results."""
+        query = match.args.strip()
+        if not query:
+            return "Please provide a search query. Usage: /search <query>"
+
+        api_key = os.environ.get("TAVILY_API_KEY", "")
+        if not api_key:
+            return "Web search is not configured. An admin needs to set TAVILY_API_KEY."
+
+        try:
+            async with httpx.AsyncClient(timeout=12) as client:
+                resp = await client.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": api_key,
+                        "query": query,
+                        "max_results": 5,
+                        "include_answer": True,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            lines = [f"*Search results for:* {query}\n"]
+
+            answer = data.get("answer")
+            if answer:
+                lines.append(f"_{answer}_\n")
+
+            results = data.get("results", [])
+            for i, r in enumerate(results[:5], 1):
+                title = r.get("title", "No title")
+                url = r.get("url", "")
+                snippet = r.get("content", "")[:150]
+                lines.append(f"{i}. *{title}*\n   {snippet}\n   {url}")
+
+            if not results and not answer:
+                lines.append("No results found.")
+
+            return "\n".join(lines)
+
+        except httpx.TimeoutException:
+            return "Search timed out. Please try again."
+        except httpx.HTTPStatusError as e:
+            logger.error("Tavily API error: %s", e.response.status_code)
+            return "Search service returned an error. Please try again later."
+        except Exception as e:
+            logger.error("Web search failed: %s", e)
+            return "Search failed. Please try again later."
 
     async def _handle_summarize_url(self, match: SkillMatch, ctx) -> str:
-        # TODO: Implement URL fetch and summarization in Docker sandbox
-        return f"URL summarization skill not yet implemented. URL: {match.args}"
+        """Fetch a URL and return a text summary."""
+        url = match.args.strip()
+        if not url:
+            return "Please provide a URL. Usage: /summarize https://example.com"
+
+        # Basic URL validation
+        if not url.startswith(("http://", "https://")):
+            return "Invalid URL. Must start with http:// or https://"
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=15,
+                follow_redirects=True,
+                max_redirects=5,
+            ) as client:
+                resp = await client.get(
+                    url,
+                    headers={"User-Agent": "SecureClaw/1.0 (URL Summarizer)"},
+                )
+                resp.raise_for_status()
+
+                content_type = resp.headers.get("content-type", "")
+                if "text/html" not in content_type and "text/plain" not in content_type:
+                    return f"Cannot summarize this content type: {content_type.split(';')[0]}"
+
+                body = resp.text
+
+            # Extract text from HTML (simple tag stripping)
+            import re as _re
+            # Remove script/style blocks
+            body = _re.sub(r"<(script|style)[^>]*>.*?</\1>", "", body, flags=_re.DOTALL | _re.IGNORECASE)
+            # Remove HTML tags
+            body = _re.sub(r"<[^>]+>", " ", body)
+            # Collapse whitespace
+            body = _re.sub(r"\s+", " ", body).strip()
+
+            if not body:
+                return "Could not extract text content from the URL."
+
+            # Truncate to a reasonable summary length
+            max_chars = 2000
+            if len(body) > max_chars:
+                body = body[:max_chars] + "..."
+
+            return f"*Summary of:* {url}\n\n{body}"
+
+        except httpx.TimeoutException:
+            return "Request timed out while fetching the URL."
+        except httpx.HTTPStatusError as e:
+            return f"Could not fetch URL (HTTP {e.response.status_code})."
+        except httpx.TooManyRedirects:
+            return "Too many redirects. The URL may be invalid."
+        except Exception as e:
+            logger.error("URL summarization failed: %s", e)
+            return "Failed to fetch and summarize the URL."
 
     async def _handle_set_reminder(self, match: SkillMatch, ctx) -> str:
-        # TODO: Implement scheduler-based reminders
-        return f"Reminder skill not yet implemented. Message: {match.args}"
+        """Set a reminder that fires after a delay."""
+        global _reminder_counter
+
+        args = match.args.strip()
+        if not args:
+            return "Please provide a reminder message. Usage: /remind <message> [in N minutes]"
+
+        # Parse optional delay: "/remind Buy milk in 30 minutes"
+        delay_match = re.search(r"\bin\s+(\d+)\s*(?:min(?:ute)?s?|m)\s*$", args, re.IGNORECASE)
+        delay_minutes = 5  # default 5 minutes
+        message = args
+
+        if delay_match:
+            delay_minutes = int(delay_match.group(1))
+            message = args[:delay_match.start()].strip()
+            if delay_minutes < 1:
+                delay_minutes = 1
+            if delay_minutes > 1440:  # max 24 hours
+                return "Maximum reminder delay is 24 hours (1440 minutes)."
+
+        if not message:
+            return "Please provide a reminder message."
+
+        _reminder_counter += 1
+        reminder_id = _reminder_counter
+        phone = ctx.phone if hasattr(ctx, "phone") else "unknown"
+
+        reminder = {
+            "id": reminder_id,
+            "message": message,
+            "delay_minutes": delay_minutes,
+            "phone": phone,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "fired": False,
+        }
+
+        if phone not in _reminders:
+            _reminders[phone] = []
+        _reminders[phone].append(reminder)
+
+        # Schedule the reminder as a background task
+        asyncio.ensure_future(self._fire_reminder(phone, reminder_id, delay_minutes))
+
+        return (
+            f"Reminder set (#{reminder_id}).\n"
+            f"Message: _{message}_\n"
+            f"I'll remind you in {delay_minutes} minute{'s' if delay_minutes != 1 else ''}."
+        )
+
+    async def _fire_reminder(self, phone: str, reminder_id: int, delay_minutes: int) -> None:
+        """Background task that fires a reminder after the delay."""
+        await asyncio.sleep(delay_minutes * 60)
+        reminders = _reminders.get(phone, [])
+        for r in reminders:
+            if r["id"] == reminder_id and not r["fired"]:
+                r["fired"] = True
+                logger.info(
+                    "Reminder #%d fired for %s: %s",
+                    reminder_id, phone[:6] + "***", r["message"],
+                )
+                break
 
     async def _handle_get_weather(self, match: SkillMatch, ctx) -> str:
-        # TODO: Implement OpenWeather API integration in Docker sandbox
-        return f"Weather skill not yet implemented. Location: {match.args}"
+        """Get current weather for a location via OpenWeather API."""
+        location = match.args.strip()
+        if not location:
+            return "Please provide a location. Usage: /weather <city>"
+
+        api_key = os.environ.get("OPENWEATHER_API_KEY", "")
+        if not api_key:
+            return "Weather is not configured. An admin needs to set OPENWEATHER_API_KEY."
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    "https://api.openweathermap.org/data/2.5/weather",
+                    params={
+                        "q": location,
+                        "appid": api_key,
+                        "units": "metric",
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            city = data.get("name", location)
+            country = data.get("sys", {}).get("country", "")
+            weather = data.get("weather", [{}])[0]
+            main = data.get("main", {})
+            wind = data.get("wind", {})
+
+            desc = weather.get("description", "N/A").capitalize()
+            temp = main.get("temp", "N/A")
+            feels_like = main.get("feels_like", "N/A")
+            humidity = main.get("humidity", "N/A")
+            wind_speed = wind.get("speed", "N/A")
+
+            location_str = f"{city}, {country}" if country else city
+
+            return (
+                f"*Weather in {location_str}*\n\n"
+                f"  {desc}\n"
+                f"  Temperature: {temp}°C (feels like {feels_like}°C)\n"
+                f"  Humidity: {humidity}%\n"
+                f"  Wind: {wind_speed} m/s"
+            )
+
+        except httpx.TimeoutException:
+            return "Weather service timed out. Please try again."
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return f"Location not found: {location}. Try a different city name."
+            logger.error("OpenWeather API error: %s", e.response.status_code)
+            return "Weather service returned an error. Please try again later."
+        except Exception as e:
+            logger.error("Weather lookup failed: %s", e)
+            return "Failed to get weather. Please try again later."
