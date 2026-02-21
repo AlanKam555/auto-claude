@@ -16,7 +16,7 @@ SecureClaw is a security-first alternative to OpenClaw for building AI-powered W
 - **RBAC** — role-based access with phone number whitelisting
 - **Rate limiting** — per-number message throttling
 - **Webhook signature verification** — HMAC-SHA256 + timestamp replay protection
-- **98-test security suite** — must pass before every deployment
+- **108-test security suite** — must pass before every deployment
 
 ## Quick Start
 
@@ -69,7 +69,7 @@ User (WhatsApp) → Meta Cloud API → Webhook → Auth → Rate Limit
 ## Testing
 
 ```bash
-# Run all 98 tests
+# Run all 108 tests
 python tests/run_all.py
 
 # Run specific component
@@ -80,6 +80,7 @@ python tests/run_all.py --component vault
 python tests/run_all.py --component webhook
 python tests/run_all.py --component skills
 python tests/run_all.py --component skill_handlers
+python tests/run_all.py --component e2e
 ```
 
 ## License

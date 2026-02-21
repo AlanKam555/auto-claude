@@ -62,9 +62,14 @@ class SkillRegistry:
     Skills are matched against inbound messages by pattern.
     """
 
-    def __init__(self, sandbox: Optional[SandboxManager] = None) -> None:
+    def __init__(
+        self,
+        sandbox: Optional[SandboxManager] = None,
+        clear_history_fn: Optional[Callable[[str], None]] = None,
+    ) -> None:
         self._skills: dict[str, Skill] = {}
         self._sandbox = sandbox or SandboxManager()
+        self._clear_history_fn = clear_history_fn
         self._register_builtins()
 
     def _register_builtins(self) -> None:
@@ -264,6 +269,10 @@ class SkillRegistry:
         )
 
     async def _handle_clear(self, match: SkillMatch, ctx) -> str:
+        phone = getattr(ctx, "phone", None)
+        if phone and self._clear_history_fn:
+            self._clear_history_fn(phone)
+            logger.info("Conversation history cleared for %s", phone[:6] + "***")
         return "Conversation history cleared."
 
     async def _handle_web_search(self, match: SkillMatch, ctx) -> str:

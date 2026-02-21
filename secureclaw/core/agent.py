@@ -84,7 +84,10 @@ You are helpful, accurate, and security-conscious."""
         self.injection = InjectionDetector()
         self.sandbox = SandboxManager()
         self.vault = VaultManager()
-        self.skills = SkillRegistry(sandbox=self.sandbox)
+        self.skills = SkillRegistry(
+            sandbox=self.sandbox,
+            clear_history_fn=self.clear_history,
+        )
 
         # Conversation history per phone (in-memory, bounded)
         self._conversations: dict[str, list[dict]] = {}

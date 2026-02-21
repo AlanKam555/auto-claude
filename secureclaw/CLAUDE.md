@@ -28,7 +28,7 @@ SecureClaw is the security-first, official-API alternative.
 3. **Sandboxed execution** — Skills ALWAYS run in Docker containers. No exceptions.
 4. **Least privilege secrets** — Skills only receive the secrets they explicitly declare in their manifest.
 5. **Prompt injection defense** — All external content (emails, documents, web pages) must be wrapped as untrusted before passing to the LLM.
-6. **Test before deploy** — Run `python tests/run_all.py` and all 98 tests must pass before any deployment.
+6. **Test before deploy** — Run `python tests/run_all.py` and all 108 tests must pass before any deployment.
 
 ## Tech Stack
 
@@ -78,7 +78,7 @@ secureclaw/
 │       └── weather/           ← OpenWeather API container
 │
 ├── tests/
-│   └── run_all.py             ← 98-test security suite (run before every deploy)
+│   └── run_all.py             ← 108-test security suite (run before every deploy)
 │
 └── config/                    ← Created at runtime, NEVER commit this folder
     ├── whitelist.json          ← Authorized phone numbers (auto-generated)
@@ -150,7 +150,7 @@ When discovering a new prompt injection attack pattern:
 ## Current Status
 
 - [x] Core architecture scaffolded
-- [x] Security test suite — 98 tests, all passing
+- [x] Security test suite — 108 tests, all passing
 - [x] Prompt injection filter — 25+ attack patterns
 - [x] Authentication & RBAC system
 - [x] Encrypted secrets vault
@@ -165,9 +165,10 @@ When discovering a new prompt injection attack pattern:
 - [x] 20 handler-level tests with mocked HTTP responses
 - [x] Timestamp validation for webhook replay attack prevention
 - [x] Rate limiting per phone number
+- [x] /clear wired to actually clear agent conversation history
+- [x] 10 end-to-end pipeline tests (auth → injection → skill → response)
 - [ ] Meta developer app setup & credentials
 - [ ] ngrok / production webhook configured
-- [ ] First end-to-end message test
 - [ ] Meta BSP application submitted
 
 ## Partnership Context
