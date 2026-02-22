@@ -1,0 +1,65 @@
+# SecureClaw CI — Runs the full 134-test security suite on every push and PR.
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "secureclaw/**"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "secureclaw/**"
+
+defaults:
+  run:
+    working-directory: secureclaw
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create __init__.py files
+        run: |
+          touch core/__init__.py security/__init__.py api/__init__.py skills/__init__.py tests/__init__.py
+
+      - name: Run security test suite
+        env:
+          ADMIN_PHONE: "+6512345678"
+          ANTHROPIC_API_KEY: "sk-ant-test-key-not-real"
+        run: python tests/run_all.py
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff check
+        run: ruff check secureclaw/ --select E,F,I,W
+        working-directory: .

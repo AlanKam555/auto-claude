@@ -14,13 +14,17 @@ import argparse
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.webhook import router as webhook_router
+
+__version__ = "1.0.0"
 
 # Load environment variables from .env file
 load_dotenv()
@@ -36,27 +40,62 @@ logger = logging.getLogger("secureclaw")
 # Ensure config directory exists
 (Path(__file__).parent / "config").mkdir(exist_ok=True)
 
+# Track server start time for uptime reporting
+_start_time = time.time()
+
+# Maximum request body size (1 MB — WhatsApp payloads are small)
+MAX_REQUEST_BODY_BYTES = 1_048_576
+
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
         title="SecureClaw",
-        description="Secure AI Assistant for WhatsApp — powered by Claude Opus 4.6",
-        version="1.0.0",
+        description="Secure AI Assistant for WhatsApp — powered by Claude",
+        version=__version__,
         docs_url=None,    # Disable Swagger UI in production
         redoc_url=None,   # Disable ReDoc in production
     )
+
+    # CORS — restrict to Meta's webhook origins in production
+    allowed_origins = os.environ.get("CORS_ORIGINS", "").split(",")
+    allowed_origins = [o.strip() for o in allowed_origins if o.strip()]
+    if allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allowed_origins,
+            allow_methods=["GET", "POST"],
+            allow_headers=["*"],
+        )
+
+    # Request size limiter middleware
+    @app.middleware("http")
+    async def limit_request_size(request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
+            return Response(
+                content='{"detail": "Request body too large"}',
+                status_code=413,
+                media_type="application/json",
+            )
+        return await call_next(request)
 
     # Include webhook routes
     app.include_router(webhook_router)
 
     @app.get("/health")
     async def health_check():
-        """Health check endpoint for monitoring."""
+        """Health check endpoint for monitoring and orchestration."""
+        uptime_seconds = int(time.time() - _start_time)
+        hours, remainder = divmod(uptime_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
         return {
             "status": "healthy",
             "service": "secureclaw",
-            "version": "1.0.0",
+            "version": __version__,
+            "uptime": f"{hours}h {minutes}m {seconds}s",
+            "uptime_seconds": uptime_seconds,
         }
 
     return app

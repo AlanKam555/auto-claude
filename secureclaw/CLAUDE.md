@@ -28,7 +28,7 @@ SecureClaw is the security-first, official-API alternative.
 3. **Sandboxed execution** — Skills ALWAYS run in Docker containers. No exceptions.
 4. **Least privilege secrets** — Skills only receive the secrets they explicitly declare in their manifest.
 5. **Prompt injection defense** — All external content (emails, documents, web pages) must be wrapped as untrusted before passing to the LLM.
-6. **Test before deploy** — Run `python tests/run_all.py` and all 108 tests must pass before any deployment.
+6. **Test before deploy** — Run `python tests/run_all.py` and all 159 tests must pass before any deployment.
 
 ## Tech Stack
 
@@ -78,11 +78,20 @@ secureclaw/
 │       └── weather/           ← OpenWeather API container
 │
 ├── tests/
-│   └── run_all.py             ← 108-test security suite (run before every deploy)
+│   └── run_all.py             ← 159-test security suite (run before every deploy)
 │
-└── config/                    ← Created at runtime, NEVER commit this folder
-    ├── whitelist.json          ← Authorized phone numbers (auto-generated)
-    └── vault.enc               ← Encrypted secrets (auto-generated)
+├── config/                    ← Created at runtime, NEVER commit this folder
+│   ├── whitelist.json          ← Authorized phone numbers (auto-generated)
+│   ├── vault.enc               ← Encrypted secrets (auto-generated)
+│   ├── reminders.json          ← Persistent reminders (auto-generated)
+│   └── history/                ← Conversation history per phone (auto-generated)
+│
+├── Dockerfile                 ← Production container image
+├── docker-compose.yml         ← Full stack orchestration
+├── pyproject.toml             ← PEP 518 project metadata
+└── .github/
+    └── workflows/
+        └── ci.yml             ← Automated testing on push/PR
 ```
 
 ## Key Files to Understand First
@@ -135,7 +144,7 @@ ngrok http 8000
 4. Create the Docker image for the skill (in `skills/docker/<skill_name>/`)
 5. Register it in `SkillRegistry._register_builtins()` or via `registry.register(skill)`
 6. Add a test in `tests/run_all.py` under `test_sandbox_config()`
-7. Run the full test suite — all 98 tests must pass
+7. Run the full test suite — all tests must pass
 
 ## How to Add a New Injection Pattern
 
@@ -149,24 +158,63 @@ When discovering a new prompt injection attack pattern:
 
 ## Current Status
 
-- [x] Core architecture scaffolded
-- [x] Security test suite — 108 tests, all passing
-- [x] Prompt injection filter — 25+ attack patterns
-- [x] Authentication & RBAC system
-- [x] Encrypted secrets vault
-- [x] Docker sandbox configuration
-- [x] Webhook handler structure
-- [x] 4 built-in skills fully implemented (web_search, summarize_url, set_reminder, get_weather)
-- [x] Web search skill — Tavily API integration with error handling
-- [x] URL summarization skill — HTML fetching, tag stripping, text extraction
-- [x] Reminder skill — async scheduling with delay parsing (e.g., "in 30 minutes")
-- [x] Weather skill — OpenWeather API with formatted display
-- [x] Docker images for each built-in skill (skills/docker/)
-- [x] 20 handler-level tests with mocked HTTP responses
-- [x] Timestamp validation for webhook replay attack prevention
-- [x] Rate limiting per phone number
-- [x] /clear wired to actually clear agent conversation history
+### Core Architecture
+- [x] FastAPI + Uvicorn application with health check endpoint
+- [x] Multi-layer security pipeline (auth → rate limit → injection → skill/Claude → filter → deliver)
+- [x] Docker sandbox for skill execution with resource limits
+- [x] Fernet-encrypted secrets vault with per-skill scoping
+- [x] Production Dockerfile and docker-compose.yml
+
+### Security (25+ attack patterns)
+- [x] Prompt injection filter — 25+ pattern categories with severity weighting
+- [x] Base64-encoded payload detection
+- [x] External content wrapping (`filter_external_content()`)
+- [x] Response filtering — API keys, tokens, private keys, env vars redacted
+- [x] HMAC-SHA256 webhook signature verification
+- [x] Timestamp replay protection (5-minute window)
+- [x] Per-phone rate limiting with configurable windows
+
+### Authentication & Authorization
+- [x] Phone number whitelist with E.164 normalization
+- [x] 3-tier RBAC — user, power_user, admin (9 permissions)
+- [x] Optional PIN system with constant-time comparison
+- [x] Open access mode for development/testing
+
+### AI & Skills
+- [x] Claude tool-use integration — skills invoked via natural language (no slash command needed)
+- [x] 4 built-in content skills: web_search, summarize_url, set_reminder, get_weather
+- [x] 3 admin skills: /whitelist, /vault, /reminders
+- [x] System skills: /help, /status, /clear
+- [x] Persistent conversation history per phone (config/history/)
+- [x] Persistent reminders with disk storage (config/reminders.json)
+- [x] Docker images for each skill (skills/docker/)
+
+### Message Delivery
+- [x] Message chunking for WhatsApp's 4096-char limit (paragraph/line/space boundaries)
+- [x] Exponential backoff retry on transient delivery failures
+- [x] Sequential chunk delivery with ordering guarantees
+
+### Testing — 159 tests, all passing
+- [x] 25 injection detection tests (patterns + false-positive safety)
+- [x] 18 auth & RBAC tests (whitelist, roles, rate limits, PIN)
+- [x] 10 sandbox configuration tests
+- [x] 8 vault encryption tests (CRUD, persistence, clear)
+- [x] 7 webhook tests (signature, timestamp, message extraction)
+- [x] 7 skill routing tests (matching, enable/disable, schema)
+- [x] 20 skill handler tests (mocked HTTP, error handling)
+- [x] 12 admin skill tests (whitelist/vault CRUD, permissions)
+- [x] 3 integration tests (imports, pipeline, gitignore)
 - [x] 10 end-to-end pipeline tests (auth → injection → skill → response)
+- [x] 14 agent feature tests (tool-use, history, chunking, retry)
+- [x] 25 application & hardening tests (health, versioning, edge cases)
+
+### DevOps
+- [x] GitHub Actions CI workflow (Python 3.11/3.12, all tests)
+- [x] Production Dockerfile (non-root, health check)
+- [x] docker-compose.yml for full stack deployment
+- [x] pyproject.toml for PEP 518 compliance
+
+### Remaining (External/Deployment)
 - [ ] Meta developer app setup & credentials
 - [ ] ngrok / production webhook configured
 - [ ] Meta BSP application submitted

@@ -5,12 +5,15 @@ Handles Meta/WhatsApp Cloud API webhook verification and inbound messages.
 Includes signature validation, timestamp replay protection, and rate limiting.
 """
 
+import asyncio
 import hashlib
 import hmac
 import logging
 import os
 import time
 from typing import Optional
+
+import httpx
 
 from fastapi import APIRouter, Request, Response, HTTPException, Query
 
@@ -250,7 +253,6 @@ async def send_whatsapp_reply(phone: str, text: str) -> bool:
             break
         # Small delay between chunks to preserve ordering
         if i < len(chunks) - 1:
-            import asyncio
             await asyncio.sleep(0.15)
 
     return success
@@ -268,9 +270,6 @@ async def _send_whatsapp_message(phone: str, text: str, retries: int = 3) -> boo
     if not token or not phone_id:
         logger.error("WhatsApp credentials not configured")
         return False
-
-    import asyncio
-    import httpx
 
     url = f"https://graph.facebook.com/v21.0/{phone_id}/messages"
     headers = {
