@@ -16,7 +16,7 @@ from typing import Optional
 
 import anthropic
 
-from security.auth import AuthManager
+from security.auth import AuthManager, Permission
 from security.injection import InjectionDetector
 from security.sandbox import SandboxManager
 from security.vault import VaultManager
@@ -25,6 +25,18 @@ from skills.registry import SkillRegistry, SkillMatch
 logger = logging.getLogger(__name__)
 
 HISTORY_DIR = Path(__file__).parent.parent / "config" / "history"
+
+# Map skill names to required permissions
+SKILL_PERMISSIONS: dict[str, Permission] = {
+    "web_search": Permission.WEB_SEARCH,
+    "summarize_url": Permission.URL_FETCH,
+    "set_reminder": Permission.REMINDERS,
+    "get_weather": Permission.WEATHER,
+}
+
+# Rough token estimation: ~4 chars per token (conservative)
+CHARS_PER_TOKEN = 4
+MAX_CONTEXT_TOKENS = 8000  # keep context well under Claude's limit
 
 
 @dataclass
@@ -105,18 +117,28 @@ You are helpful, accurate, and security-conscious."""
 
         logger.info("SecureClawAgent initialized (model=%s)", self.model)
 
-    def _build_tools(self) -> list[dict]:
-        """Build Anthropic tool definitions from registered skills."""
+    def _build_tools(self, phone: str = "") -> list[dict]:
+        """Build Anthropic tool definitions from registered skills.
+
+        Only includes skills the user has permission to use.
+        """
         tools = []
         tool_skills = ["web_search", "summarize_url", "set_reminder", "get_weather"]
         for name in tool_skills:
             skill = self.skills.get_skill(name)
-            if skill and skill.enabled and skill.input_schema:
-                tools.append({
-                    "name": skill.name,
-                    "description": skill.description,
-                    "input_schema": skill.input_schema,
-                })
+            if not skill or not skill.enabled or not skill.input_schema:
+                continue
+
+            # Permission check: only offer tools the user can use
+            required_perm = SKILL_PERMISSIONS.get(name)
+            if required_perm and phone and not self.auth.has_permission(phone, required_perm):
+                continue
+
+            tools.append({
+                "name": skill.name,
+                "description": skill.description,
+                "input_schema": skill.input_schema,
+            })
         return tools
 
     async def process_message(self, ctx: MessageContext) -> AgentResponse:
@@ -165,6 +187,19 @@ You are helpful, accurate, and security-conscious."""
         # 5. Skill routing (explicit slash commands get priority)
         skill_match = self.skills.match(ctx.text)
         if skill_match:
+            # Permission check for content skills
+            required_perm = SKILL_PERMISSIONS.get(skill_match.skill_name)
+            if required_perm and not self.auth.has_permission(ctx.phone, required_perm):
+                elapsed = (time.time() - start) * 1000
+                return AgentResponse(
+                    text=f"You don't have permission to use /{skill_match.skill_name}. "
+                         "Contact an admin to upgrade your role.",
+                    skill_used=skill_match.skill_name,
+                    processing_time_ms=elapsed,
+                    blocked=True,
+                    block_reason="insufficient_permissions",
+                )
+
             try:
                 skill_result = await self.skills.execute(skill_match, ctx)
                 elapsed = (time.time() - start) * 1000
@@ -195,6 +230,20 @@ You are helpful, accurate, and security-conscious."""
             processing_time_ms=elapsed,
         )
 
+    def _estimate_tokens(self, messages: list[dict]) -> int:
+        """Rough token estimate for a message list."""
+        total_chars = sum(
+            len(m.get("content", "")) if isinstance(m.get("content"), str) else 100
+            for m in messages
+        )
+        return total_chars // CHARS_PER_TOKEN
+
+    def _trim_history(self, history: list[dict]) -> list[dict]:
+        """Trim history to fit within context window budget."""
+        while len(history) > 2 and self._estimate_tokens(history) > MAX_CONTEXT_TOKENS:
+            history.pop(0)
+        return history
+
     async def _call_claude(self, ctx: MessageContext) -> tuple[str, Optional[str]]:
         """
         Call the Claude API with conversation history, tools, and security system prompt.
@@ -202,8 +251,16 @@ You are helpful, accurate, and security-conscious."""
         """
         history = self._get_history(ctx.phone)
         history.append({"role": "user", "content": ctx.text})
+        history = self._trim_history(history)
 
-        tools = self._build_tools()
+        tools = self._build_tools(phone=ctx.phone)
+
+        # Record metric
+        try:
+            from main import record_metric
+            record_metric("claude_calls")
+        except ImportError:
+            pass
 
         create_kwargs = {
             "model": self.model,

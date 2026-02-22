@@ -17,7 +17,7 @@ SecureClaw is a security-first alternative to OpenClaw for building AI-powered W
 - **Rate limiting** — per-number message throttling with configurable windows
 - **Webhook signature verification** — HMAC-SHA256 + timestamp replay protection (5-min window)
 - **Response filtering** — API keys, tokens, private keys automatically redacted
-- **159-test security suite** — must pass before every deployment
+- **175-test security suite** — must pass before every deployment
 
 ### AI Features
 
@@ -127,7 +127,7 @@ secureclaw/
 │   ├── registry.py            # Skill definitions + all handler implementations
 │   └── docker/                # Dockerfiles for sandboxed execution
 ├── tests/
-│   └── run_all.py             # 159-test security suite
+│   └── run_all.py             # 175-test security suite
 ├── config/                    # Runtime data (gitignored)
 ├── Dockerfile                 # Production container
 ├── docker-compose.yml         # Full stack orchestration
@@ -138,7 +138,7 @@ secureclaw/
 ## Testing
 
 ```bash
-# Run all 159 tests
+# Run all 175 tests
 python tests/run_all.py
 
 # Run specific component
@@ -154,6 +154,7 @@ python tests/run_all.py --component integration    # 3 tests
 python tests/run_all.py --component e2e            # 10 tests
 python tests/run_all.py --component agent_features # 14 tests
 python tests/run_all.py --component app            # 25 tests
+python tests/run_all.py --component production     # 16 tests
 ```
 
 ## Configuration

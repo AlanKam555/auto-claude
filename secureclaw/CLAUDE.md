@@ -28,7 +28,7 @@ SecureClaw is the security-first, official-API alternative.
 3. **Sandboxed execution** — Skills ALWAYS run in Docker containers. No exceptions.
 4. **Least privilege secrets** — Skills only receive the secrets they explicitly declare in their manifest.
 5. **Prompt injection defense** — All external content (emails, documents, web pages) must be wrapped as untrusted before passing to the LLM.
-6. **Test before deploy** — Run `python tests/run_all.py` and all 159 tests must pass before any deployment.
+6. **Test before deploy** — Run `python tests/run_all.py` and all 175 tests must pass before any deployment.
 
 ## Tech Stack
 
@@ -78,7 +78,7 @@ secureclaw/
 │       └── weather/           ← OpenWeather API container
 │
 ├── tests/
-│   └── run_all.py             ← 159-test security suite (run before every deploy)
+│   └── run_all.py             ← 175-test security suite (run before every deploy)
 │
 ├── config/                    ← Created at runtime, NEVER commit this folder
 │   ├── whitelist.json          ← Authorized phone numbers (auto-generated)
@@ -173,12 +173,15 @@ When discovering a new prompt injection attack pattern:
 - [x] HMAC-SHA256 webhook signature verification
 - [x] Timestamp replay protection (5-minute window)
 - [x] Per-phone rate limiting with configurable windows
+- [x] Message deduplication (5-minute ID tracking)
+- [x] Request body size limiting (1 MB max)
 
 ### Authentication & Authorization
 - [x] Phone number whitelist with E.164 normalization
 - [x] 3-tier RBAC — user, power_user, admin (9 permissions)
 - [x] Optional PIN system with constant-time comparison
 - [x] Open access mode for development/testing
+- [x] Permission-based skill filtering (users only see/execute allowed skills)
 
 ### AI & Skills
 - [x] Claude tool-use integration — skills invoked via natural language (no slash command needed)
@@ -188,13 +191,14 @@ When discovering a new prompt injection attack pattern:
 - [x] Persistent conversation history per phone (config/history/)
 - [x] Persistent reminders with disk storage (config/reminders.json)
 - [x] Docker images for each skill (skills/docker/)
+- [x] Context window trimming with token estimation
 
 ### Message Delivery
 - [x] Message chunking for WhatsApp's 4096-char limit (paragraph/line/space boundaries)
 - [x] Exponential backoff retry on transient delivery failures
 - [x] Sequential chunk delivery with ordering guarantees
 
-### Testing — 159 tests, all passing
+### Testing — 175 tests, all passing
 - [x] 25 injection detection tests (patterns + false-positive safety)
 - [x] 18 auth & RBAC tests (whitelist, roles, rate limits, PIN)
 - [x] 10 sandbox configuration tests
@@ -207,12 +211,16 @@ When discovering a new prompt injection attack pattern:
 - [x] 10 end-to-end pipeline tests (auth → injection → skill → response)
 - [x] 14 agent feature tests (tool-use, history, chunking, retry)
 - [x] 25 application & hardening tests (health, versioning, edge cases)
+- [x] 16 production feature tests (dedup, permissions, context trimming, metrics)
 
 ### DevOps
 - [x] GitHub Actions CI workflow (Python 3.11/3.12, all tests)
 - [x] Production Dockerfile (non-root, health check)
 - [x] docker-compose.yml for full stack deployment
 - [x] pyproject.toml for PEP 518 compliance
+- [x] /metrics endpoint for operational monitoring
+- [x] Structured JSON logging (LOG_FORMAT=json)
+- [x] Graceful shutdown with reminder flush
 
 ### Remaining (External/Deployment)
 - [ ] Meta developer app setup & credentials

@@ -16,6 +16,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from threading import Lock
 
 import uvicorn
 from dotenv import load_dotenv
@@ -24,17 +25,25 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.webhook import router as webhook_router
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Configure structured logging
+_log_format = os.environ.get("LOG_FORMAT", "text")
+if _log_format == "json":
+    logging.basicConfig(
+        level=logging.INFO,
+        format='{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":"%(message)s"}',
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 logger = logging.getLogger("secureclaw")
 
 # Ensure config directory exists
@@ -45,6 +54,35 @@ _start_time = time.time()
 
 # Maximum request body size (1 MB — WhatsApp payloads are small)
 MAX_REQUEST_BODY_BYTES = 1_048_576
+
+# ── Metrics counters (thread-safe) ──
+_metrics_lock = Lock()
+_metrics = {
+    "messages_received": 0,
+    "messages_blocked": 0,
+    "messages_processed": 0,
+    "skill_invocations": 0,
+    "claude_calls": 0,
+    "errors": 0,
+    "total_processing_ms": 0.0,
+}
+
+
+def record_metric(key: str, value: float = 1) -> None:
+    """Thread-safe metric increment."""
+    with _metrics_lock:
+        _metrics[key] = _metrics.get(key, 0) + value
+
+
+def get_metrics() -> dict:
+    """Return a snapshot of current metrics."""
+    with _metrics_lock:
+        snapshot = dict(_metrics)
+    processed = snapshot["messages_processed"]
+    snapshot["avg_processing_ms"] = (
+        round(snapshot["total_processing_ms"] / processed, 1) if processed > 0 else 0
+    )
+    return snapshot
 
 
 def create_app() -> FastAPI:
@@ -98,10 +136,37 @@ def create_app() -> FastAPI:
             "uptime_seconds": uptime_seconds,
         }
 
+    @app.get("/metrics")
+    async def metrics_endpoint():
+        """Operational metrics for monitoring dashboards."""
+        return {
+            "service": "secureclaw",
+            "version": __version__,
+            "uptime_seconds": int(time.time() - _start_time),
+            **get_metrics(),
+        }
+
     return app
 
 
 app = create_app()
+
+
+async def graceful_shutdown() -> None:
+    """Cleanup on shutdown: flush pending reminders and log."""
+    logger.info("Shutting down SecureClaw...")
+    try:
+        from skills.registry import _save_reminders
+        _save_reminders()
+        logger.info("Reminders flushed to disk")
+    except Exception as e:
+        logger.error("Failed to flush reminders on shutdown: %s", e)
+    logger.info("SecureClaw stopped.")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await graceful_shutdown()
 
 
 def validate_env() -> list[str]:

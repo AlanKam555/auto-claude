@@ -29,6 +29,26 @@ _agent: Optional[SecureClawAgent] = None
 # Replay protection: reject requests older than this
 MAX_TIMESTAMP_AGE_SECONDS = 300  # 5 minutes
 
+# Message deduplication — track recently processed message IDs
+_processed_ids: dict[str, float] = {}
+_DEDUP_TTL_SECONDS = 300  # 5 minutes
+
+
+def _is_duplicate(message_id: str) -> bool:
+    """Check if a message ID was recently processed (deduplication)."""
+    now = time.time()
+
+    # Prune old entries
+    expired = [k for k, ts in _processed_ids.items() if now - ts > _DEDUP_TTL_SECONDS]
+    for k in expired:
+        del _processed_ids[k]
+
+    if message_id in _processed_ids:
+        return True
+
+    _processed_ids[message_id] = now
+    return False
+
 
 def get_agent() -> SecureClawAgent:
     """Get or create the singleton agent instance."""
@@ -146,6 +166,18 @@ async def handle_webhook(request: Request) -> dict:
 
     phone, text, message_id = message_info
 
+    # Deduplication — skip if we already processed this message
+    if _is_duplicate(message_id):
+        logger.info("Duplicate message %s from %s*** — skipped", message_id, phone[:6])
+        return {"status": "ok", "deduplicated": True}
+
+    # Record metrics
+    try:
+        from main import record_metric
+        record_metric("messages_received")
+    except ImportError:
+        pass
+
     # Process through the agent
     agent = get_agent()
     ctx = MessageContext(
@@ -155,6 +187,19 @@ async def handle_webhook(request: Request) -> dict:
     )
 
     response = await agent.process_message(ctx)
+
+    # Record processing metrics
+    try:
+        from main import record_metric
+        if response.blocked:
+            record_metric("messages_blocked")
+        else:
+            record_metric("messages_processed")
+        if response.skill_used:
+            record_metric("skill_invocations")
+        record_metric("total_processing_ms", response.processing_time_ms)
+    except ImportError:
+        pass
 
     # Send response via WhatsApp (with chunking for long messages)
     if not response.blocked:

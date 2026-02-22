@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SecureClaw Security Test Suite — 159 tests across all security components.
+SecureClaw Security Test Suite — 175 tests across all security components.
 
 Run all tests:
     ADMIN_PHONE="+6512345678" python tests/run_all.py
@@ -19,7 +19,7 @@ Run specific component:
     python tests/run_all.py --component agent_features
     python tests/run_all.py --component app
 
-All 159 tests must pass before any deployment.
+All 175 tests must pass before any deployment.
 """
 
 import argparse
@@ -1926,6 +1926,256 @@ def get_app_tests():
 
 
 # ═══════════════════════════════════════════════════════════════
+# PRODUCTION FEATURES TESTS (16 tests)
+# ═══════════════════════════════════════════════════════════════
+
+def get_production_tests():
+    """Tests for deduplication, permissions, context trimming, and metrics."""
+    import asyncio
+
+    ADMIN_PHONE = os.environ["ADMIN_PHONE"]
+
+    def _run(coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    # ── Message Deduplication ──
+
+    @test("dedup: first message is not a duplicate")
+    def test_dedup_first():
+        from api.webhook import _is_duplicate, _processed_ids
+        _processed_ids.clear()
+        assert not _is_duplicate("msg-unique-001")
+
+    @test("dedup: same message ID is detected as duplicate")
+    def test_dedup_same():
+        from api.webhook import _is_duplicate, _processed_ids
+        _processed_ids.clear()
+        _is_duplicate("msg-dup-001")
+        assert _is_duplicate("msg-dup-001")
+
+    @test("dedup: different message IDs are not duplicates")
+    def test_dedup_different():
+        from api.webhook import _is_duplicate, _processed_ids
+        _processed_ids.clear()
+        _is_duplicate("msg-a")
+        assert not _is_duplicate("msg-b")
+
+    @test("dedup: expired entries are pruned")
+    def test_dedup_expiry():
+        from api.webhook import _is_duplicate, _processed_ids, _DEDUP_TTL_SECONDS
+        _processed_ids.clear()
+        # Insert an old entry
+        _processed_ids["msg-old"] = time.time() - _DEDUP_TTL_SECONDS - 10
+        # Should be pruned and not counted
+        assert not _is_duplicate("msg-old")
+
+    # ── Permission-based Skill Filtering ──
+
+    @test("permissions: user role blocked from /search")
+    def test_user_blocked_search():
+        from core.agent import SecureClawAgent, MessageContext
+        agent = SecureClawAgent()
+        phone = "+6500077001"
+        agent.auth.add_number(phone, role="user")
+
+        ctx = MessageContext(phone=phone, text="/search Python", message_id="perm-1")
+        resp = _run(agent.process_message(ctx))
+
+        assert resp.blocked is True
+        assert "permission" in resp.text.lower()
+        agent.auth.remove_number(phone)
+
+    @test("permissions: power_user allowed /search")
+    def test_power_user_allowed_search():
+        from core.agent import SecureClawAgent, MessageContext
+        agent = SecureClawAgent()
+        phone = "+6500077002"
+        agent.auth.add_number(phone, role="power_user")
+
+        saved = os.environ.pop("TAVILY_API_KEY", None)
+        try:
+            ctx = MessageContext(phone=phone, text="/search Python", message_id="perm-2")
+            resp = _run(agent.process_message(ctx))
+            # Should execute (not blocked), even if API key is missing
+            assert resp.blocked is False
+            assert resp.skill_used == "web_search"
+        finally:
+            if saved:
+                os.environ["TAVILY_API_KEY"] = saved
+            agent.auth.remove_number(phone)
+
+    @test("permissions: user role blocked from /weather")
+    def test_user_blocked_weather():
+        from core.agent import SecureClawAgent, MessageContext
+        agent = SecureClawAgent()
+        phone = "+6500077003"
+        agent.auth.add_number(phone, role="user")
+
+        ctx = MessageContext(phone=phone, text="/weather London", message_id="perm-3")
+        resp = _run(agent.process_message(ctx))
+
+        assert resp.blocked is True
+        assert "permission" in resp.text.lower()
+        agent.auth.remove_number(phone)
+
+    @test("permissions: admin has all skill permissions")
+    def test_admin_all_perms():
+        from core.agent import SecureClawAgent, MessageContext
+        agent = SecureClawAgent()
+
+        saved = os.environ.pop("TAVILY_API_KEY", None)
+        try:
+            ctx = MessageContext(phone=ADMIN_PHONE, text="/search test", message_id="perm-4")
+            resp = _run(agent.process_message(ctx))
+            assert resp.blocked is False
+            assert resp.skill_used == "web_search"
+        finally:
+            if saved:
+                os.environ["TAVILY_API_KEY"] = saved
+
+    @test("permissions: _build_tools filters by user role")
+    def test_build_tools_filtered():
+        from core.agent import SecureClawAgent
+        agent = SecureClawAgent()
+        phone = "+6500077005"
+        agent.auth.add_number(phone, role="user")
+
+        tools = agent._build_tools(phone=phone)
+        names = [t["name"] for t in tools]
+        # User role should not get any content tools
+        assert "web_search" not in names
+        assert "get_weather" not in names
+
+        agent.auth.remove_number(phone)
+
+    @test("permissions: _build_tools includes tools for power_user")
+    def test_build_tools_power_user():
+        from core.agent import SecureClawAgent
+        agent = SecureClawAgent()
+        phone = "+6500077006"
+        agent.auth.add_number(phone, role="power_user")
+
+        tools = agent._build_tools(phone=phone)
+        names = [t["name"] for t in tools]
+        assert "web_search" in names
+        assert "get_weather" in names
+
+        agent.auth.remove_number(phone)
+
+    # ── Context Window Trimming ──
+
+    @test("context: _estimate_tokens returns reasonable estimate")
+    def test_estimate_tokens():
+        from core.agent import SecureClawAgent
+        agent = SecureClawAgent()
+        messages = [
+            {"role": "user", "content": "Hello " * 100},  # 600 chars
+            {"role": "assistant", "content": "World " * 100},  # 600 chars
+        ]
+        tokens = agent._estimate_tokens(messages)
+        assert 250 < tokens < 400  # 1200 chars / 4 ≈ 300
+
+    @test("context: _trim_history removes oldest messages")
+    def test_trim_history():
+        from core.agent import SecureClawAgent, MAX_CONTEXT_TOKENS, CHARS_PER_TOKEN
+        agent = SecureClawAgent()
+
+        # Create history that exceeds MAX_CONTEXT_TOKENS
+        big_msg = "x" * (MAX_CONTEXT_TOKENS * CHARS_PER_TOKEN + 100)
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "second"},
+            {"role": "user", "content": big_msg},
+        ]
+
+        trimmed = agent._trim_history(history)
+        # Should have removed older messages
+        assert len(trimmed) < len(history) or len(trimmed) == 2
+
+    @test("context: _trim_history keeps at least 2 messages")
+    def test_trim_minimum():
+        from core.agent import SecureClawAgent
+        agent = SecureClawAgent()
+        # Even a huge history should keep at least 2 messages
+        big = "x" * 100000
+        history = [
+            {"role": "user", "content": big},
+            {"role": "assistant", "content": big},
+        ]
+        trimmed = agent._trim_history(history)
+        assert len(trimmed) >= 2
+
+    # ── Metrics ──
+
+    @test("metrics: record_metric increments counter")
+    def test_record_metric():
+        try:
+            from main import record_metric, get_metrics, _metrics, _metrics_lock
+        except ImportError:
+            return  # skip if uvicorn not available
+
+        with _metrics_lock:
+            _metrics["errors"] = 0
+        record_metric("errors")
+        record_metric("errors")
+        m = get_metrics()
+        assert m["errors"] == 2
+
+        with _metrics_lock:
+            _metrics["errors"] = 0
+
+    @test("metrics: avg_processing_ms is computed correctly")
+    def test_avg_processing():
+        try:
+            from main import record_metric, get_metrics, _metrics, _metrics_lock
+        except ImportError:
+            return
+
+        with _metrics_lock:
+            _metrics["messages_processed"] = 0
+            _metrics["total_processing_ms"] = 0.0
+        record_metric("messages_processed")
+        record_metric("messages_processed")
+        record_metric("total_processing_ms", 100.0)
+        record_metric("total_processing_ms", 200.0)
+        m = get_metrics()
+        assert m["avg_processing_ms"] == 150.0
+
+        with _metrics_lock:
+            _metrics["messages_processed"] = 0
+            _metrics["total_processing_ms"] = 0.0
+
+    @test("metrics: get_metrics returns all expected keys")
+    def test_metrics_keys():
+        try:
+            from main import get_metrics
+        except ImportError:
+            return
+
+        m = get_metrics()
+        expected = [
+            "messages_received", "messages_blocked", "messages_processed",
+            "skill_invocations", "claude_calls", "errors",
+            "total_processing_ms", "avg_processing_ms",
+        ]
+        for key in expected:
+            assert key in m, f"Missing metric: {key}"
+
+    return [
+        test_dedup_first, test_dedup_same, test_dedup_different, test_dedup_expiry,
+        test_user_blocked_search, test_power_user_allowed_search,
+        test_user_blocked_weather, test_admin_all_perms,
+        test_build_tools_filtered, test_build_tools_power_user,
+        test_estimate_tokens, test_trim_history, test_trim_minimum,
+        test_record_metric, test_avg_processing, test_metrics_keys,
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════
 # MAIN RUNNER
 # ═══════════════════════════════════════════════════════════════
 
@@ -1942,6 +2192,7 @@ COMPONENTS = {
     "e2e": get_e2e_tests,
     "agent_features": get_agent_feature_tests,
     "app": get_app_tests,
+    "production": get_production_tests,
 }
 
 
