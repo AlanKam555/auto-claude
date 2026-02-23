@@ -6,6 +6,7 @@ Responses are filtered before delivery. Skill execution happens in Docker sandbo
 Claude can invoke skills via tool-use (natural language → skill routing).
 """
 
+import asyncio
 import json
 import os
 import logging
@@ -244,6 +245,47 @@ You are helpful, accurate, and security-conscious."""
             history.pop(0)
         return history
 
+    async def _api_call_with_retry(self, **kwargs) -> anthropic.types.Message:
+        """Call Claude API with exponential backoff on transient errors."""
+        max_retries = int(os.environ.get("CLAUDE_MAX_RETRIES", "3"))
+
+        for attempt in range(max_retries):
+            try:
+                return self.client.messages.create(**kwargs)
+            except anthropic.RateLimitError:
+                if attempt < max_retries - 1:
+                    backoff = 2 ** attempt
+                    logger.warning(
+                        "Claude rate limited (attempt %d/%d), retrying in %ds",
+                        attempt + 1, max_retries, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+                raise
+            except anthropic.APIStatusError as e:
+                if e.status_code >= 500 and attempt < max_retries - 1:
+                    backoff = 2 ** attempt
+                    logger.warning(
+                        "Claude server error %d (attempt %d/%d), retrying in %ds",
+                        e.status_code, attempt + 1, max_retries, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+                raise
+            except anthropic.APIConnectionError:
+                if attempt < max_retries - 1:
+                    backoff = 2 ** attempt
+                    logger.warning(
+                        "Claude connection error (attempt %d/%d), retrying in %ds",
+                        attempt + 1, max_retries, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+                raise
+
+        # Should not reach here, but just in case
+        raise RuntimeError("Claude API call failed after all retries")
+
     async def _call_claude(self, ctx: MessageContext) -> tuple[str, Optional[str]]:
         """
         Call the Claude API with conversation history, tools, and security system prompt.
@@ -271,7 +313,7 @@ You are helpful, accurate, and security-conscious."""
         if tools:
             create_kwargs["tools"] = tools
 
-        response = self.client.messages.create(**create_kwargs)
+        response = await self._api_call_with_retry(**create_kwargs)
 
         # Handle tool use
         tool_used = None
@@ -280,7 +322,7 @@ You are helpful, accurate, and security-conscious."""
 
             # Get final response after tool use
             create_kwargs["messages"] = history
-            response = self.client.messages.create(**create_kwargs)
+            response = await self._api_call_with_retry(**create_kwargs)
 
         # Extract text from response
         assistant_text = ""

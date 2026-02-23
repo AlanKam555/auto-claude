@@ -28,7 +28,7 @@ SecureClaw is the security-first, official-API alternative.
 3. **Sandboxed execution** — Skills ALWAYS run in Docker containers. No exceptions.
 4. **Least privilege secrets** — Skills only receive the secrets they explicitly declare in their manifest.
 5. **Prompt injection defense** — All external content (emails, documents, web pages) must be wrapped as untrusted before passing to the LLM.
-6. **Test before deploy** — Run `python tests/run_all.py` and all 175 tests must pass before any deployment.
+6. **Test before deploy** — Run `python tests/run_all.py` and all 195 tests must pass before any deployment.
 
 ## Tech Stack
 
@@ -67,7 +67,8 @@ secureclaw/
 │
 ├── api/
 │   ├── __init__.py
-│   └── webhook.py             ← Meta webhook handler + WhatsApp message sender
+│   ├── webhook.py             ← Meta webhook handler + WhatsApp message sender
+│   └── admin.py               ← Admin REST API (/admin/stats, /users, /skills)
 │
 ├── skills/
 │   ├── __init__.py
@@ -78,7 +79,7 @@ secureclaw/
 │       └── weather/           ← OpenWeather API container
 │
 ├── tests/
-│   └── run_all.py             ← 175-test security suite (run before every deploy)
+│   └── run_all.py             ← 195-test security suite (run before every deploy)
 │
 ├── config/                    ← Created at runtime, NEVER commit this folder
 │   ├── whitelist.json          ← Authorized phone numbers (auto-generated)
@@ -197,8 +198,23 @@ When discovering a new prompt injection attack pattern:
 - [x] Message chunking for WhatsApp's 4096-char limit (paragraph/line/space boundaries)
 - [x] Exponential backoff retry on transient delivery failures
 - [x] Sequential chunk delivery with ordering guarantees
+- [x] Read receipts — messages marked as read via WhatsApp API
+- [x] Media message handling — graceful responses for images, audio, video, documents, stickers, location
 
-### Testing — 175 tests, all passing
+### Input Sanitization
+- [x] Phone number sanitization — strip non-digit chars, enforce E.164, max length
+- [x] Message content sanitization — strip control chars, enforce length limit (10 KB)
+
+### Admin REST API
+- [x] `/admin/stats` — system metrics, uptime, version (API key protected)
+- [x] `/admin/users` — list whitelisted users and roles (API key protected)
+- [x] `/admin/skills` — list registered skills with metadata (API key protected)
+
+### Claude API Resilience
+- [x] Exponential backoff retry on rate limits (429), server errors (5xx), connection errors
+- [x] Configurable max retries via `CLAUDE_MAX_RETRIES` env var
+
+### Testing — 195 tests, all passing
 - [x] 25 injection detection tests (patterns + false-positive safety)
 - [x] 18 auth & RBAC tests (whitelist, roles, rate limits, PIN)
 - [x] 10 sandbox configuration tests
@@ -212,6 +228,7 @@ When discovering a new prompt injection attack pattern:
 - [x] 14 agent feature tests (tool-use, history, chunking, retry)
 - [x] 25 application & hardening tests (health, versioning, edge cases)
 - [x] 16 production feature tests (dedup, permissions, context trimming, metrics)
+- [x] 20 v1.2 enhancement tests (sanitization, media, admin API, retry, receipts)
 
 ### DevOps
 - [x] GitHub Actions CI workflow (Python 3.11/3.12, all tests)

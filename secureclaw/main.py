@@ -23,9 +23,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.admin import router as admin_router
 from api.webhook import router as webhook_router
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # Load environment variables from .env file
 load_dotenv()
@@ -118,8 +119,9 @@ def create_app() -> FastAPI:
             )
         return await call_next(request)
 
-    # Include webhook routes
+    # Include routers
     app.include_router(webhook_router)
+    app.include_router(admin_router)
 
     @app.get("/health")
     async def health_check():

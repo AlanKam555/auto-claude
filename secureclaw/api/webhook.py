@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -48,6 +49,42 @@ def _is_duplicate(message_id: str) -> bool:
 
     _processed_ids[message_id] = now
     return False
+
+
+# ── Input Sanitization ──
+
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+MAX_MESSAGE_LENGTH = 10_000  # safe cap (WhatsApp max is ~64 KB)
+
+
+def sanitize_phone(phone: str) -> str:
+    """Sanitize a phone number — strip non-digit/plus characters, enforce length."""
+    cleaned = re.sub(r"[^\d+]", "", phone)
+    if not cleaned.startswith("+"):
+        cleaned = "+" + cleaned
+    # E.164: max 15 digits + plus sign = 16 chars
+    return cleaned[:16]
+
+
+def sanitize_message(text: str) -> str:
+    """Strip control characters and enforce length limit."""
+    cleaned = _CONTROL_CHAR_RE.sub("", text)
+    if len(cleaned) > MAX_MESSAGE_LENGTH:
+        cleaned = cleaned[:MAX_MESSAGE_LENGTH]
+    return cleaned.strip()
+
+
+# ── Media message responses ──
+
+MEDIA_TYPE_RESPONSES: dict[str, str] = {
+    "image": "I received your image, but I can currently only process text messages. Please describe what you'd like help with.",
+    "audio": "I received your voice message, but I can only process text. Please type your request instead.",
+    "video": "I received your video, but I can currently only process text messages. Please describe what you need.",
+    "document": "I received your document, but I can only process text messages. Please describe what you need.",
+    "sticker": "Nice sticker! I can only process text messages though. How can I help you?",
+    "location": "I received your location, but I can only process text messages. How can I help you?",
+    "contacts": "I received a contact share, but I can only process text messages. How can I help you?",
+}
 
 
 def get_agent() -> SecureClawAgent:
@@ -158,62 +195,126 @@ async def handle_webhook(request: Request) -> dict:
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    # Extract message from Meta's webhook format
+    # Try to extract a text message
     message_info = _extract_message(data)
-    if not message_info:
-        # Not a message event (could be status update, etc.)
+
+    if message_info:
+        phone, text, message_id = message_info
+
+        # Send read receipt (fire-and-forget)
+        asyncio.ensure_future(mark_message_as_read(message_id))
+
+        # Deduplication — skip if we already processed this message
+        if _is_duplicate(message_id):
+            logger.info("Duplicate message %s from %s*** — skipped", message_id, phone[:6])
+            return {"status": "ok", "deduplicated": True}
+
+        # Sanitize inputs
+        phone = sanitize_phone(phone)
+        text = sanitize_message(text)
+
+        if not phone or not text:
+            return {"status": "ok"}
+
+        # Record metrics
+        try:
+            from main import record_metric
+            record_metric("messages_received")
+        except ImportError:
+            pass
+
+        # Process through the agent
+        agent = get_agent()
+        ctx = MessageContext(phone=phone, text=text, message_id=message_id)
+        response = await agent.process_message(ctx)
+
+        # Record processing metrics
+        try:
+            from main import record_metric
+            if response.blocked:
+                record_metric("messages_blocked")
+            else:
+                record_metric("messages_processed")
+            if response.skill_used:
+                record_metric("skill_invocations")
+            record_metric("total_processing_ms", response.processing_time_ms)
+        except ImportError:
+            pass
+
+        # Send response via WhatsApp (with chunking for long messages)
+        if not response.blocked:
+            await send_whatsapp_reply(phone, response.text)
+
+        logger.info(
+            "Processed message from %s***: blocked=%s, skill=%s, time=%.0fms",
+            phone[:6], response.blocked, response.skill_used, response.processing_time_ms,
+        )
         return {"status": "ok"}
 
-    phone, text, message_id = message_info
+    # Try to extract a non-text (media) message
+    media_info = _extract_media_message(data)
+    if media_info:
+        phone, message_id, msg_type = media_info
 
-    # Deduplication — skip if we already processed this message
-    if _is_duplicate(message_id):
-        logger.info("Duplicate message %s from %s*** — skipped", message_id, phone[:6])
-        return {"status": "ok", "deduplicated": True}
+        # Send read receipt
+        asyncio.ensure_future(mark_message_as_read(message_id))
 
-    # Record metrics
-    try:
-        from main import record_metric
-        record_metric("messages_received")
-    except ImportError:
-        pass
+        # Deduplication
+        if _is_duplicate(message_id):
+            return {"status": "ok", "deduplicated": True}
 
-    # Process through the agent
-    agent = get_agent()
-    ctx = MessageContext(
-        phone=phone,
-        text=text,
-        message_id=message_id,
-    )
+        phone = sanitize_phone(phone)
 
-    response = await agent.process_message(ctx)
+        # Record metric
+        try:
+            from main import record_metric
+            record_metric("messages_received")
+        except ImportError:
+            pass
 
-    # Record processing metrics
-    try:
-        from main import record_metric
-        if response.blocked:
-            record_metric("messages_blocked")
-        else:
-            record_metric("messages_processed")
-        if response.skill_used:
-            record_metric("skill_invocations")
-        record_metric("total_processing_ms", response.processing_time_ms)
-    except ImportError:
-        pass
+        # Send graceful "text only" response
+        response_text = MEDIA_TYPE_RESPONSES.get(
+            msg_type,
+            "I can currently only process text messages. Please send your request as text.",
+        )
+        await send_whatsapp_reply(phone, response_text)
 
-    # Send response via WhatsApp (with chunking for long messages)
-    if not response.blocked:
-        await send_whatsapp_reply(phone, response.text)
+        logger.info("Media message (%s) from %s*** — sent text-only notice", msg_type, phone[:6])
+        return {"status": "ok", "media_type": msg_type}
 
-    logger.info(
-        "Processed message from %s***: blocked=%s, skill=%s, time=%.0fms",
-        phone[:6],
-        response.blocked,
-        response.skill_used,
-        response.processing_time_ms,
-    )
-
+    # Not a message event (status update, delivery notification, etc.)
     return {"status": "ok"}
+
+
+def _extract_media_message(data: dict) -> Optional[tuple[str, str, str]]:
+    """
+    Extract phone, message_id, and type from a non-text message.
+    Returns (phone, message_id, message_type) or None.
+    """
+    try:
+        entry = data.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        messages = value.get("messages", [])
+
+        if not messages:
+            return None
+
+        message = messages[0]
+        msg_type = message.get("type", "unknown")
+
+        if msg_type == "text":
+            return None  # handled by _extract_message
+
+        phone = message.get("from", "")
+        message_id = message.get("id", "")
+
+        if not phone:
+            return None
+
+        return phone, message_id, msg_type
+    except (IndexError, KeyError, TypeError):
+        return None
 
 
 def _extract_message(data: dict) -> Optional[tuple[str, str, str]]:
@@ -281,6 +382,32 @@ def _chunk_message(text: str, max_chars: int = 3800) -> list[str]:
         remaining = remaining[cut:].lstrip()
 
     return chunks
+
+
+async def mark_message_as_read(message_id: str) -> None:
+    """Send a read receipt to WhatsApp for the given message (fire-and-forget)."""
+    token = os.environ.get("WHATSAPP_TOKEN")
+    phone_id = os.environ.get("WHATSAPP_PHONE_ID")
+
+    if not token or not phone_id:
+        return
+
+    url = f"https://graph.facebook.com/v21.0/{phone_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(url, headers=headers, json=payload)
+    except Exception as e:
+        logger.warning("Failed to send read receipt: %s", e)
 
 
 async def send_whatsapp_reply(phone: str, text: str) -> bool:

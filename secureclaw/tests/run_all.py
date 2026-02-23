@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SecureClaw Security Test Suite — 175 tests across all security components.
+SecureClaw Security Test Suite — 195 tests across all security components.
 
 Run all tests:
     ADMIN_PHONE="+6512345678" python tests/run_all.py
@@ -18,8 +18,9 @@ Run specific component:
     python tests/run_all.py --component e2e
     python tests/run_all.py --component agent_features
     python tests/run_all.py --component app
+    python tests/run_all.py --component enhancements
 
-All 175 tests must pass before any deployment.
+All 195 tests must pass before any deployment.
 """
 
 import argparse
@@ -2176,6 +2177,271 @@ def get_production_tests():
 
 
 # ═══════════════════════════════════════════════════════════════
+# V1.2 ENHANCEMENT TESTS (20 tests)
+# ═══════════════════════════════════════════════════════════════
+
+def get_enhancement_tests():
+    """Tests for v1.2: sanitization, media handling, admin API, retry, read receipts."""
+    import asyncio
+    from unittest.mock import patch, MagicMock, AsyncMock
+
+    def _run(coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    # ── Input Sanitization ──
+
+    @test("sanitize: phone strips non-digit chars")
+    def test_sanitize_phone_strips():
+        from api.webhook import sanitize_phone
+        assert sanitize_phone("+65 1234 5678") == "+6512345678"
+        assert sanitize_phone("+65-1234-5678") == "+6512345678"
+        assert sanitize_phone("(+65) 12345678") == "+6512345678"
+
+    @test("sanitize: phone adds plus prefix")
+    def test_sanitize_phone_prefix():
+        from api.webhook import sanitize_phone
+        assert sanitize_phone("6512345678") == "+6512345678"
+
+    @test("sanitize: phone enforces max length")
+    def test_sanitize_phone_length():
+        from api.webhook import sanitize_phone
+        long_phone = "+1234567890123456789"
+        result = sanitize_phone(long_phone)
+        assert len(result) <= 16
+
+    @test("sanitize: phone handles empty string")
+    def test_sanitize_phone_empty():
+        from api.webhook import sanitize_phone
+        result = sanitize_phone("")
+        assert result == "+"
+
+    @test("sanitize: message strips control chars")
+    def test_sanitize_message_control():
+        from api.webhook import sanitize_message
+        text = "Hello\x00World\x07\x08Test"
+        result = sanitize_message(text)
+        assert "\x00" not in result
+        assert "\x07" not in result
+        assert "HelloWorldTest" == result
+
+    @test("sanitize: message preserves newlines and tabs")
+    def test_sanitize_message_whitespace():
+        from api.webhook import sanitize_message
+        text = "Hello\nWorld\tTest"
+        result = sanitize_message(text)
+        assert "\n" in result
+        assert "\t" in result
+
+    @test("sanitize: message enforces length limit")
+    def test_sanitize_message_length():
+        from api.webhook import sanitize_message, MAX_MESSAGE_LENGTH
+        text = "x" * (MAX_MESSAGE_LENGTH + 500)
+        result = sanitize_message(text)
+        assert len(result) <= MAX_MESSAGE_LENGTH
+
+    # ── Media Message Handling ──
+
+    @test("media: _extract_media_message extracts image")
+    def test_extract_image():
+        from api.webhook import _extract_media_message
+        payload = {
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "+6512345678", "type": "image", "id": "media1",
+                              "image": {"id": "img123"}}]
+            }}]}]
+        }
+        result = _extract_media_message(payload)
+        assert result is not None
+        phone, msg_id, msg_type = result
+        assert phone == "+6512345678"
+        assert msg_id == "media1"
+        assert msg_type == "image"
+
+    @test("media: _extract_media_message extracts audio")
+    def test_extract_audio():
+        from api.webhook import _extract_media_message
+        payload = {
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "+6512345678", "type": "audio", "id": "media2"}]
+            }}]}]
+        }
+        result = _extract_media_message(payload)
+        assert result is not None
+        _, _, msg_type = result
+        assert msg_type == "audio"
+
+    @test("media: _extract_media_message returns None for text")
+    def test_extract_text_ignored():
+        from api.webhook import _extract_media_message
+        payload = {
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "+6512345678", "type": "text",
+                              "text": {"body": "Hello"}, "id": "msg1"}]
+            }}]}]
+        }
+        result = _extract_media_message(payload)
+        assert result is None
+
+    @test("media: _extract_media_message returns None for empty")
+    def test_extract_empty():
+        from api.webhook import _extract_media_message
+        assert _extract_media_message({}) is None
+        assert _extract_media_message({"entry": []}) is None
+
+    @test("media: MEDIA_TYPE_RESPONSES covers all types")
+    def test_media_responses_coverage():
+        from api.webhook import MEDIA_TYPE_RESPONSES
+        expected_types = ["image", "audio", "video", "document", "sticker", "location", "contacts"]
+        for t in expected_types:
+            assert t in MEDIA_TYPE_RESPONSES, f"Missing response for {t}"
+            assert len(MEDIA_TYPE_RESPONSES[t]) > 10  # non-trivial response
+
+    # ── Admin API ──
+
+    @test("admin: admin router module imports cleanly")
+    def test_admin_import():
+        from api.admin import router, _verify_admin_key
+        assert router is not None
+        assert router.prefix == "/admin"
+
+    @test("admin: _verify_admin_key rejects when not configured")
+    def test_admin_not_configured():
+        from api.admin import _verify_admin_key
+        from fastapi import HTTPException
+        saved = os.environ.pop("ADMIN_API_KEY", None)
+        try:
+            try:
+                _verify_admin_key("some-key")
+                assert False, "Should have raised HTTPException"
+            except HTTPException as e:
+                assert e.status_code == 503
+        finally:
+            if saved:
+                os.environ["ADMIN_API_KEY"] = saved
+
+    @test("admin: _verify_admin_key rejects invalid key")
+    def test_admin_invalid_key():
+        from api.admin import _verify_admin_key
+        from fastapi import HTTPException
+        os.environ["ADMIN_API_KEY"] = "correct-key"
+        try:
+            try:
+                _verify_admin_key("wrong-key")
+                assert False, "Should have raised HTTPException"
+            except HTTPException as e:
+                assert e.status_code == 401
+        finally:
+            del os.environ["ADMIN_API_KEY"]
+
+    @test("admin: _verify_admin_key accepts valid key")
+    def test_admin_valid_key():
+        from api.admin import _verify_admin_key
+        os.environ["ADMIN_API_KEY"] = "correct-key"
+        try:
+            _verify_admin_key("correct-key")  # should not raise
+        finally:
+            del os.environ["ADMIN_API_KEY"]
+
+    @test("admin: app includes admin routes")
+    def test_admin_routes():
+        _has_uvicorn = True
+        try:
+            import uvicorn  # noqa: F401
+        except ImportError:
+            _has_uvicorn = False
+        if not _has_uvicorn:
+            return
+        from main import app
+        routes = [r.path for r in app.routes]
+        assert "/admin/stats" in routes
+        assert "/admin/users" in routes
+        assert "/admin/skills" in routes
+
+    # ── Read Receipts ──
+
+    @test("receipts: mark_message_as_read doesn't crash without creds")
+    def test_read_receipt_no_creds():
+        from api.webhook import mark_message_as_read
+        saved_token = os.environ.pop("WHATSAPP_TOKEN", None)
+        saved_id = os.environ.pop("WHATSAPP_PHONE_ID", None)
+        try:
+            _run(mark_message_as_read("msg-123"))  # should return silently
+        finally:
+            if saved_token:
+                os.environ["WHATSAPP_TOKEN"] = saved_token
+            if saved_id:
+                os.environ["WHATSAPP_PHONE_ID"] = saved_id
+
+    # ── Claude Retry Logic ──
+
+    @test("retry: _api_call_with_retry succeeds on first try")
+    def test_retry_first_try():
+        from core.agent import SecureClawAgent
+        agent = SecureClawAgent()
+
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="Hello", type="text")]
+        mock_response.stop_reason = "end_turn"
+
+        with patch.object(agent.client.messages, "create", return_value=mock_response):
+            result = _run(agent._api_call_with_retry(
+                model=agent.model, max_tokens=100,
+                system="test", messages=[{"role": "user", "content": "hi"}],
+            ))
+            assert result == mock_response
+
+    @test("retry: _api_call_with_retry retries on rate limit")
+    def test_retry_rate_limit():
+        import anthropic
+        from core.agent import SecureClawAgent
+        agent = SecureClawAgent()
+
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="OK")]
+
+        rate_limit_resp = MagicMock()
+        rate_limit_resp.status_code = 429
+        rate_limit_error = anthropic.RateLimitError(
+            message="rate limited",
+            response=rate_limit_resp,
+            body={"error": {"message": "rate limited"}},
+        )
+
+        os.environ["CLAUDE_MAX_RETRIES"] = "2"
+        try:
+            with patch.object(
+                agent.client.messages, "create",
+                side_effect=[rate_limit_error, mock_response],
+            ):
+                with patch("asyncio.sleep", new_callable=AsyncMock):
+                    result = _run(agent._api_call_with_retry(
+                        model=agent.model, max_tokens=100,
+                        system="test", messages=[{"role": "user", "content": "hi"}],
+                    ))
+                    assert result == mock_response
+        finally:
+            os.environ["CLAUDE_MAX_RETRIES"] = "3"
+
+    return [
+        test_sanitize_phone_strips, test_sanitize_phone_prefix,
+        test_sanitize_phone_length, test_sanitize_phone_empty,
+        test_sanitize_message_control, test_sanitize_message_whitespace,
+        test_sanitize_message_length,
+        test_extract_image, test_extract_audio,
+        test_extract_text_ignored, test_extract_empty,
+        test_media_responses_coverage,
+        test_admin_import, test_admin_not_configured,
+        test_admin_invalid_key, test_admin_valid_key, test_admin_routes,
+        test_read_receipt_no_creds,
+        test_retry_first_try, test_retry_rate_limit,
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════
 # MAIN RUNNER
 # ═══════════════════════════════════════════════════════════════
 
@@ -2193,6 +2459,7 @@ COMPONENTS = {
     "agent_features": get_agent_feature_tests,
     "app": get_app_tests,
     "production": get_production_tests,
+    "enhancements": get_enhancement_tests,
 }
 
 
