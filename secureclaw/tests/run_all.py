@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SecureClaw Security Test Suite — 195 tests across all security components.
+SecureClaw Security Test Suite — 213 tests across all security components.
 
 Run all tests:
     ADMIN_PHONE="+6512345678" python tests/run_all.py
@@ -19,8 +19,9 @@ Run specific component:
     python tests/run_all.py --component agent_features
     python tests/run_all.py --component app
     python tests/run_all.py --component enhancements
+    python tests/run_all.py --component v13_features
 
-All 195 tests must pass before any deployment.
+All 213 tests must pass before any deployment.
 """
 
 import argparse
@@ -2025,8 +2026,9 @@ def get_production_tests():
 
     @test("permissions: admin has all skill permissions")
     def test_admin_all_perms():
-        from core.agent import SecureClawAgent, MessageContext
+        from core.agent import SecureClawAgent, MessageContext, _cooldown_tracker
         agent = SecureClawAgent()
+        _cooldown_tracker.clear()  # reset cooldowns from prior tests
 
         saved = os.environ.pop("TAVILY_API_KEY", None)
         try:
@@ -2442,6 +2444,308 @@ def get_enhancement_tests():
 
 
 # ═══════════════════════════════════════════════════════════════
+# V1.3 FEATURE TESTS (18 tests)
+# ═══════════════════════════════════════════════════════════════
+
+def get_v13_tests():
+    """Tests for v1.3: audit logging, cooldowns, export, deep health, status events."""
+    import asyncio
+    import shutil
+    import tempfile
+    from unittest.mock import patch, MagicMock
+
+    ADMIN_PHONE = os.environ["ADMIN_PHONE"]
+
+    def _run(coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    # ── Audit Logging ──
+
+    @test("audit: audit module imports cleanly")
+    def test_audit_import():
+        from security.audit import audit_log, AuditEvent, read_recent_events
+        assert AuditEvent.AUTH_BLOCKED == "auth.blocked"
+        assert AuditEvent.INJECTION_BLOCKED == "injection.blocked"
+        assert AuditEvent.SKILL_EXECUTED == "skill.executed"
+
+    @test("audit: audit_log writes to file")
+    def test_audit_writes():
+        from security.audit import audit_log, AUDIT_LOG_FILE
+        audit_log("test.event", phone="+6512345678", detail="unit test entry")
+        assert AUDIT_LOG_FILE.exists()
+        content = AUDIT_LOG_FILE.read_text()
+        assert "test.event" in content
+        assert "+65123***" in content  # masked
+
+    @test("audit: read_recent_events returns structured data")
+    def test_audit_read():
+        from security.audit import audit_log, read_recent_events
+        audit_log("test.read_check", phone="+6500000000", detail="readable")
+        events = read_recent_events(5)
+        assert len(events) > 0
+        found = any(e.get("event") == "test.read_check" for e in events)
+        assert found, "Should find the test event"
+
+    @test("audit: audit_log includes metadata")
+    def test_audit_metadata():
+        from security.audit import audit_log, read_recent_events
+        audit_log(
+            "test.metadata",
+            phone="+6500000000",
+            detail="meta test",
+            metadata={"patterns": ["xss", "sqli"]},
+        )
+        events = read_recent_events(3)
+        found = [e for e in events if e.get("event") == "test.metadata"]
+        assert found
+        assert found[0].get("metadata", {}).get("patterns") == ["xss", "sqli"]
+
+    @test("audit: phone masking works correctly")
+    def test_audit_masking():
+        from security.audit import audit_log, read_recent_events
+        audit_log("test.mask", phone="+6598765432", detail="mask test")
+        events = read_recent_events(3)
+        found = [e for e in events if e.get("event") == "test.mask"]
+        assert found
+        assert found[0]["phone"] == "+65987***"
+
+    # ── Skill Cooldowns ──
+
+    @test("cooldown: _check_cooldown returns None when no cooldown active")
+    def test_cooldown_none():
+        from core.agent import SecureClawAgent, _cooldown_tracker
+        agent = SecureClawAgent()
+        phone = "+6500055001"
+        _cooldown_tracker.clear()
+        result = agent._check_cooldown("web_search", phone)
+        assert result is None
+
+    @test("cooldown: _check_cooldown returns seconds when on cooldown")
+    def test_cooldown_active():
+        from core.agent import SecureClawAgent, _cooldown_tracker
+        agent = SecureClawAgent()
+        phone = "+6500055002"
+        _cooldown_tracker.clear()
+        # First call records timestamp
+        agent._check_cooldown("web_search", phone)
+        # Immediate second call should be on cooldown
+        result = agent._check_cooldown("web_search", phone)
+        assert result is not None
+        assert result > 0
+
+    @test("cooldown: skills without cooldown are always allowed")
+    def test_cooldown_no_limit():
+        from core.agent import SecureClawAgent, _cooldown_tracker, SKILL_COOLDOWNS
+        agent = SecureClawAgent()
+        phone = "+6500055003"
+        _cooldown_tracker.clear()
+        # help has no cooldown entry
+        assert "help" not in SKILL_COOLDOWNS
+        result = agent._check_cooldown("help", phone)
+        assert result is None
+        result = agent._check_cooldown("help", phone)
+        assert result is None
+
+    @test("cooldown: different users have separate cooldowns")
+    def test_cooldown_per_user():
+        from core.agent import SecureClawAgent, _cooldown_tracker
+        agent = SecureClawAgent()
+        _cooldown_tracker.clear()
+        phone_a = "+6500055004"
+        phone_b = "+6500055005"
+        # User A triggers cooldown
+        agent._check_cooldown("web_search", phone_a)
+        # User B should not be affected
+        result = agent._check_cooldown("web_search", phone_b)
+        assert result is None
+
+    @test("cooldown: e2e cooldown blocks rapid skill reuse")
+    def test_cooldown_e2e():
+        from core.agent import SecureClawAgent, MessageContext, _cooldown_tracker
+        agent = SecureClawAgent()
+        _cooldown_tracker.clear()
+        phone = "+6500055006"
+        agent.auth.add_number(phone, role="admin")
+
+        # First search should work
+        ctx1 = MessageContext(phone=phone, text="/help", message_id="cd-1")
+        resp1 = _run(agent.process_message(ctx1))
+        assert resp1.blocked is False
+
+        # /search has cooldown — first should work
+        saved = os.environ.pop("TAVILY_API_KEY", None)
+        try:
+            ctx2 = MessageContext(phone=phone, text="/search python", message_id="cd-2")
+            resp2 = _run(agent.process_message(ctx2))
+            assert resp2.blocked is False
+
+            # Immediate second /search should be blocked by cooldown
+            ctx3 = MessageContext(phone=phone, text="/search javascript", message_id="cd-3")
+            resp3 = _run(agent.process_message(ctx3))
+            assert resp3.blocked is True
+            assert resp3.block_reason == "cooldown"
+            assert "wait" in resp3.text.lower()
+        finally:
+            if saved:
+                os.environ["TAVILY_API_KEY"] = saved
+            agent.auth.remove_number(phone)
+
+    # ── /export Skill ──
+
+    @test("export: /export matches skill pattern")
+    def test_export_match():
+        from skills.registry import SkillRegistry
+        reg = SkillRegistry()
+        match = reg.match("/export")
+        assert match is not None
+        assert match.skill_name == "export"
+
+    @test("export: /export returns no history message when empty")
+    def test_export_empty():
+        from skills.registry import SkillRegistry, SkillMatch
+
+        class FakeCtx:
+            phone = "+6500066001"
+            is_admin = False
+
+        reg = SkillRegistry()
+        match = SkillMatch(skill_name="export", args="", raw_text="/export")
+        result = _run(reg.execute(match, FakeCtx()))
+        assert "no conversation" in result.lower() or "empty" in result.lower()
+
+    @test("export: /export returns history when present")
+    def test_export_with_history():
+        from core.agent import HISTORY_DIR
+        from skills.registry import SkillRegistry, SkillMatch
+
+        class FakeCtx:
+            phone = "+6500066002"
+            is_admin = False
+
+        # Write a history file
+        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        safe_name = FakeCtx.phone.replace("+", "")
+        path = HISTORY_DIR / f"{safe_name}.json"
+        path.write_text(json.dumps({"messages": [
+            {"role": "user", "content": "Hello there"},
+            {"role": "assistant", "content": "Hi! How can I help?"},
+        ]}) + "\n")
+
+        try:
+            reg = SkillRegistry()
+            match = SkillMatch(skill_name="export", args="", raw_text="/export")
+            result = _run(reg.execute(match, FakeCtx()))
+            assert "Conversation Export" in result
+            assert "2 messages" in result
+            assert "Hello there" in result
+        finally:
+            path.unlink(missing_ok=True)
+
+    # ── Deep Health Check ──
+
+    @test("health: deep check returns dependency statuses")
+    def test_deep_health():
+        _has_uvicorn = True
+        try:
+            import uvicorn  # noqa: F401
+        except ImportError:
+            _has_uvicorn = False
+        if not _has_uvicorn:
+            return
+        from main import create_app
+        from starlette.testclient import TestClient
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/health?deep=true")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "checks" in data
+        assert "anthropic_key" in data["checks"]
+        assert "config_dir" in data["checks"]
+        assert "vault" in data["checks"]
+
+    @test("health: shallow check has no checks key")
+    def test_shallow_health():
+        _has_uvicorn = True
+        try:
+            import uvicorn  # noqa: F401
+        except ImportError:
+            _has_uvicorn = False
+        if not _has_uvicorn:
+            return
+        from main import create_app
+        from starlette.testclient import TestClient
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "checks" not in data
+        assert data["status"] == "healthy"
+
+    # ── Webhook Status Events ──
+
+    @test("status: _extract_status_update extracts delivered status")
+    def test_status_delivered():
+        from api.webhook import _extract_status_update
+        payload = {
+            "entry": [{"changes": [{"value": {
+                "statuses": [{
+                    "id": "wamid.abc123",
+                    "status": "delivered",
+                    "recipient_id": "+6512345678",
+                    "timestamp": "1709000000",
+                }]
+            }}]}]
+        }
+        result = _extract_status_update(payload)
+        assert result is not None
+        recipient, msg_id, status_type = result
+        assert recipient == "+6512345678"
+        assert msg_id == "wamid.abc123"
+        assert status_type == "delivered"
+
+    @test("status: _extract_status_update returns None for no statuses")
+    def test_status_empty():
+        from api.webhook import _extract_status_update
+        assert _extract_status_update({}) is None
+        assert _extract_status_update({"entry": [{"changes": [{"value": {}}]}]}) is None
+
+    @test("status: _extract_status_update handles read status")
+    def test_status_read():
+        from api.webhook import _extract_status_update
+        payload = {
+            "entry": [{"changes": [{"value": {
+                "statuses": [{
+                    "id": "wamid.xyz789",
+                    "status": "read",
+                    "recipient_id": "+6598765432",
+                    "timestamp": "1709000001",
+                }]
+            }}]}]
+        }
+        result = _extract_status_update(payload)
+        assert result is not None
+        _, _, status_type = result
+        assert status_type == "read"
+
+    return [
+        test_audit_import, test_audit_writes, test_audit_read,
+        test_audit_metadata, test_audit_masking,
+        test_cooldown_none, test_cooldown_active,
+        test_cooldown_no_limit, test_cooldown_per_user,
+        test_cooldown_e2e,
+        test_export_match, test_export_empty, test_export_with_history,
+        test_deep_health, test_shallow_health,
+        test_status_delivered, test_status_empty, test_status_read,
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════
 # MAIN RUNNER
 # ═══════════════════════════════════════════════════════════════
 
@@ -2460,6 +2764,7 @@ COMPONENTS = {
     "app": get_app_tests,
     "production": get_production_tests,
     "enhancements": get_enhancement_tests,
+    "v13_features": get_v13_tests,
 }
 
 

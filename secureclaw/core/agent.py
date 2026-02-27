@@ -18,6 +18,7 @@ from typing import Optional
 import anthropic
 
 from security.auth import AuthManager, Permission
+from security.audit import audit_log, AuditEvent
 from security.injection import InjectionDetector
 from security.sandbox import SandboxManager
 from security.vault import VaultManager
@@ -38,6 +39,17 @@ SKILL_PERMISSIONS: dict[str, Permission] = {
 # Rough token estimation: ~4 chars per token (conservative)
 CHARS_PER_TOKEN = 4
 MAX_CONTEXT_TOKENS = 8000  # keep context well under Claude's limit
+
+# Per-skill cooldowns (seconds) to prevent API abuse — 0 means no cooldown
+SKILL_COOLDOWNS: dict[str, int] = {
+    "web_search": 10,
+    "summarize_url": 15,
+    "get_weather": 10,
+    "set_reminder": 5,
+}
+
+# Tracks last usage per skill per phone: {skill_name: {phone: timestamp}}
+_cooldown_tracker: dict[str, dict[str, float]] = {}
 
 
 @dataclass
@@ -142,6 +154,26 @@ You are helpful, accurate, and security-conscious."""
             })
         return tools
 
+    def _check_cooldown(self, skill_name: str, phone: str) -> Optional[int]:
+        """Check if a skill is on cooldown for a phone.
+
+        Returns seconds remaining if on cooldown, or None if the skill can be used.
+        Records the usage timestamp on success.
+        """
+        cooldown_secs = SKILL_COOLDOWNS.get(skill_name, 0)
+        if cooldown_secs <= 0:
+            return None
+
+        tracker = _cooldown_tracker.setdefault(skill_name, {})
+        last_used = tracker.get(phone, 0)
+        elapsed = time.time() - last_used
+
+        if elapsed < cooldown_secs:
+            return int(cooldown_secs - elapsed) + 1
+
+        tracker[phone] = time.time()
+        return None
+
     async def process_message(self, ctx: MessageContext) -> AgentResponse:
         """
         Process an inbound message through the full security pipeline.
@@ -152,6 +184,7 @@ You are helpful, accurate, and security-conscious."""
         # 1. Auth check
         if not self.auth.is_allowed(ctx.phone):
             logger.warning("Blocked message from unauthorized phone: %s", ctx.phone[:6] + "***")
+            audit_log(AuditEvent.AUTH_BLOCKED, phone=ctx.phone, detail="Unauthorized phone")
             return AgentResponse(
                 text="Sorry, you are not authorized to use this service.",
                 blocked=True,
@@ -161,6 +194,7 @@ You are helpful, accurate, and security-conscious."""
         # 2. Rate limit check
         if not self.auth.check_rate_limit(ctx.phone):
             logger.warning("Rate limit hit for phone: %s", ctx.phone[:6] + "***")
+            audit_log(AuditEvent.AUTH_RATE_LIMITED, phone=ctx.phone, detail="Rate limit exceeded")
             return AgentResponse(
                 text="You're sending messages too quickly. Please wait a moment.",
                 blocked=True,
@@ -175,6 +209,12 @@ You are helpful, accurate, and security-conscious."""
                 injection_result.score,
                 injection_result.matched_patterns,
                 ctx.phone[:6] + "***",
+            )
+            audit_log(
+                AuditEvent.INJECTION_BLOCKED,
+                phone=ctx.phone,
+                detail=f"score={injection_result.score:.2f}",
+                metadata={"patterns": injection_result.matched_patterns},
             )
             return AgentResponse(
                 text="Your message was flagged by our security system. Please rephrase your request.",
@@ -201,9 +241,31 @@ You are helpful, accurate, and security-conscious."""
                     block_reason="insufficient_permissions",
                 )
 
+            # Cooldown check for content skills
+            remaining = self._check_cooldown(skill_match.skill_name, ctx.phone)
+            if remaining is not None:
+                elapsed = (time.time() - start) * 1000
+                audit_log(
+                    AuditEvent.SKILL_COOLDOWN,
+                    phone=ctx.phone,
+                    detail=f"/{skill_match.skill_name} on cooldown ({remaining}s)",
+                )
+                return AgentResponse(
+                    text=f"Please wait {remaining} seconds before using /{skill_match.skill_name} again.",
+                    skill_used=skill_match.skill_name,
+                    processing_time_ms=elapsed,
+                    blocked=True,
+                    block_reason="cooldown",
+                )
+
             try:
                 skill_result = await self.skills.execute(skill_match, ctx)
                 elapsed = (time.time() - start) * 1000
+                audit_log(
+                    AuditEvent.SKILL_EXECUTED,
+                    phone=ctx.phone,
+                    detail=f"/{skill_match.skill_name}",
+                )
                 return AgentResponse(
                     text=skill_result,
                     skill_used=skill_match.skill_name,
@@ -216,8 +278,10 @@ You are helpful, accurate, and security-conscious."""
         # 6. Claude API call (with tool-use)
         try:
             response_text, tool_used = await self._call_claude(ctx)
+            audit_log(AuditEvent.CLAUDE_CALL, phone=ctx.phone, detail="success")
         except Exception as e:
             logger.error("Claude API call failed: %s", e)
+            audit_log(AuditEvent.CLAUDE_ERROR, phone=ctx.phone, detail=str(e)[:200])
             response_text = "I'm having trouble processing your request right now. Please try again."
             tool_used = None
 

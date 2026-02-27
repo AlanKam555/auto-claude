@@ -124,19 +124,43 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
 
     @app.get("/health")
-    async def health_check():
-        """Health check endpoint for monitoring and orchestration."""
+    async def health_check(deep: bool = False):
+        """Health check endpoint for monitoring and orchestration.
+
+        Pass ?deep=true for dependency checks (API keys, vault, config dir).
+        """
         uptime_seconds = int(time.time() - _start_time)
         hours, remainder = divmod(uptime_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
 
-        return {
+        result = {
             "status": "healthy",
             "service": "secureclaw",
             "version": __version__,
             "uptime": f"{hours}h {minutes}m {seconds}s",
             "uptime_seconds": uptime_seconds,
         }
+
+        if deep:
+            checks = {
+                "anthropic_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
+                "whatsapp_token": bool(os.environ.get("WHATSAPP_TOKEN")),
+                "whatsapp_phone_id": bool(os.environ.get("WHATSAPP_PHONE_ID")),
+                "config_dir": (Path(__file__).parent / "config").is_dir(),
+            }
+
+            try:
+                from security.vault import VaultManager
+                VaultManager()
+                checks["vault"] = True
+            except Exception:
+                checks["vault"] = False
+
+            result["checks"] = checks
+            if not all(checks.values()):
+                result["status"] = "degraded"
+
+        return result
 
     @app.get("/metrics")
     async def metrics_endpoint():

@@ -28,7 +28,7 @@ SecureClaw is the security-first, official-API alternative.
 3. **Sandboxed execution** — Skills ALWAYS run in Docker containers. No exceptions.
 4. **Least privilege secrets** — Skills only receive the secrets they explicitly declare in their manifest.
 5. **Prompt injection defense** — All external content (emails, documents, web pages) must be wrapped as untrusted before passing to the LLM.
-6. **Test before deploy** — Run `python tests/run_all.py` and all 195 tests must pass before any deployment.
+6. **Test before deploy** — Run `python tests/run_all.py` and all 213 tests must pass before any deployment.
 
 ## Tech Stack
 
@@ -63,7 +63,8 @@ secureclaw/
 │   ├── auth.py                ← Phone whitelist + permissions + PIN system
 │   ├── injection.py           ← Prompt injection filter (25+ attack patterns)
 │   ├── sandbox.py             ← Docker skill execution + resource limits
-│   └── vault.py               ← Encrypted secrets storage + per-skill scoping
+│   ├── vault.py               ← Encrypted secrets storage + per-skill scoping
+│   └── audit.py               ← Structured audit logging (JSON lines)
 │
 ├── api/
 │   ├── __init__.py
@@ -79,7 +80,7 @@ secureclaw/
 │       └── weather/           ← OpenWeather API container
 │
 ├── tests/
-│   └── run_all.py             ← 195-test security suite (run before every deploy)
+│   └── run_all.py             ← 213-test security suite (run before every deploy)
 │
 ├── config/                    ← Created at runtime, NEVER commit this folder
 │   ├── whitelist.json          ← Authorized phone numbers (auto-generated)
@@ -214,7 +215,19 @@ When discovering a new prompt injection attack pattern:
 - [x] Exponential backoff retry on rate limits (429), server errors (5xx), connection errors
 - [x] Configurable max retries via `CLAUDE_MAX_RETRIES` env var
 
-### Testing — 195 tests, all passing
+### Audit Trail
+- [x] Structured JSON audit log (config/audit.log) with size-based rotation
+- [x] All security events logged — auth, injection, skill exec, cooldown, Claude errors
+- [x] Phone number masking for privacy
+- [x] `read_recent_events()` API for programmatic access
+- [x] Integrated into full pipeline (agent, webhook, skills)
+
+### Skill Cooldowns
+- [x] Per-user, per-skill cooldowns to prevent API abuse
+- [x] Configurable cooldown durations per skill (SKILL_COOLDOWNS dict)
+- [x] Separate tracking per user — one user's cooldown doesn't affect others
+
+### Testing — 213 tests, all passing
 - [x] 25 injection detection tests (patterns + false-positive safety)
 - [x] 18 auth & RBAC tests (whitelist, roles, rate limits, PIN)
 - [x] 10 sandbox configuration tests
@@ -229,6 +242,7 @@ When discovering a new prompt injection attack pattern:
 - [x] 25 application & hardening tests (health, versioning, edge cases)
 - [x] 16 production feature tests (dedup, permissions, context trimming, metrics)
 - [x] 20 v1.2 enhancement tests (sanitization, media, admin API, retry, receipts)
+- [x] 18 v1.3 feature tests (audit logging, cooldowns, export, deep health, status events)
 
 ### DevOps
 - [x] GitHub Actions CI workflow (Python 3.11/3.12, all tests)

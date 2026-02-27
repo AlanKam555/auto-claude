@@ -216,10 +216,15 @@ async def handle_webhook(request: Request) -> dict:
         if not phone or not text:
             return {"status": "ok"}
 
-        # Record metrics
+        # Record metrics and audit
         try:
             from main import record_metric
             record_metric("messages_received")
+        except ImportError:
+            pass
+        try:
+            from security.audit import audit_log, AuditEvent
+            audit_log(AuditEvent.MESSAGE_RECEIVED, phone=phone, detail=f"msg_id={message_id}")
         except ImportError:
             pass
 
@@ -272,6 +277,12 @@ async def handle_webhook(request: Request) -> dict:
         except ImportError:
             pass
 
+        try:
+            from security.audit import audit_log, AuditEvent
+            audit_log(AuditEvent.MEDIA_RECEIVED, phone=phone, detail=f"type={msg_type}, msg_id={message_id}")
+        except ImportError:
+            pass
+
         # Send graceful "text only" response
         response_text = MEDIA_TYPE_RESPONSES.get(
             msg_type,
@@ -282,8 +293,54 @@ async def handle_webhook(request: Request) -> dict:
         logger.info("Media message (%s) from %s*** — sent text-only notice", msg_type, phone[:6])
         return {"status": "ok", "media_type": msg_type}
 
-    # Not a message event (status update, delivery notification, etc.)
+    # Handle status updates (delivered, read confirmations from WhatsApp)
+    status_info = _extract_status_update(data)
+    if status_info:
+        recipient, msg_id, status_type = status_info
+        logger.debug(
+            "Status update: %s for message %s to %s***",
+            status_type, msg_id, recipient[:6],
+        )
+        try:
+            from security.audit import audit_log, AuditEvent
+            audit_log(
+                AuditEvent.STATUS_UPDATE,
+                phone=recipient,
+                detail=f"Status: {status_type}, message: {msg_id}",
+            )
+        except ImportError:
+            pass
+        return {"status": "ok", "event": "status_update", "message_status": status_type}
+
+    # Not a recognized event
     return {"status": "ok"}
+
+
+def _extract_status_update(data: dict) -> Optional[tuple[str, str, str]]:
+    """
+    Extract status updates (delivered, read, sent) from Meta webhook payload.
+    Returns (recipient_phone, message_id, status) or None.
+    """
+    try:
+        entry = data.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        statuses = value.get("statuses", [])
+
+        if not statuses:
+            return None
+
+        status = statuses[0]
+        recipient = status.get("recipient_id", "")
+        msg_id = status.get("id", "")
+        status_type = status.get("status", "")
+
+        if not recipient or not status_type:
+            return None
+
+        return recipient, msg_id, status_type
+    except (IndexError, KeyError, TypeError):
+        return None
 
 
 def _extract_media_message(data: dict) -> Optional[tuple[str, str, str]]:

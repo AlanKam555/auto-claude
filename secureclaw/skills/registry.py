@@ -149,6 +149,13 @@ class SkillRegistry:
             handler=self._handle_list_reminders,
         ))
 
+        self.register(Skill(
+            name="export",
+            description="Export your conversation history",
+            pattern=re.compile(r"^/export$", re.IGNORECASE),
+            handler=self._handle_export,
+        ))
+
         # ── 4 Built-in content skills (run in Docker) ──
 
         self.register(Skill(
@@ -691,4 +698,39 @@ class SkillRegistry:
                 f"    Set: {r['created_at'][:16]} | "
                 f"Fires in: {r['delay_minutes']} min"
             )
+        return "\n".join(lines)
+
+    async def _handle_export(self, match: SkillMatch, ctx) -> str:
+        """Export conversation history as formatted text."""
+        phone = getattr(ctx, "phone", None)
+        if not phone:
+            return "Unable to identify your phone number."
+
+        history_dir = Path(__file__).parent.parent / "config" / "history"
+        safe_name = phone.replace("+", "").replace(" ", "")
+        path = history_dir / f"{safe_name}.json"
+
+        if not path.exists():
+            return "No conversation history found."
+
+        try:
+            data = json.loads(path.read_text())
+            messages = data.get("messages", [])
+        except (json.JSONDecodeError, OSError):
+            return "Failed to load conversation history."
+
+        if not messages:
+            return "Your conversation history is empty."
+
+        lines = [f"*Conversation Export* ({len(messages)} messages)\n"]
+        for m in messages:
+            role = m.get("role", "unknown")
+            content = m.get("content", "")
+            if isinstance(content, str):
+                prefix = "You" if role == "user" else "SecureClaw"
+                # Truncate very long individual messages in export
+                if len(content) > 200:
+                    content = content[:200] + "..."
+                lines.append(f"*{prefix}:* {content}")
+
         return "\n".join(lines)
